@@ -73,7 +73,7 @@ chat_application/
 
 ## 🛠️ Tech Stack
 
-**Python** · **Flask** · **Flask-SocketIO** · **Socket.IO (JS client)** · **Gunicorn + eventlet** · avatars from [avatar.iran.liara.run](https://avatar.iran.liara.run)
+**Python** · **Flask** · **Flask-SocketIO** · **Socket.IO (JS client)** · **Gunicorn + eventlet** · avatars from [DiceBear](https://www.dicebear.com)
 
 > Users are kept in memory and messages aren't stored, so the user list resets when the server restarts.
 
