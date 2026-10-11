@@ -6,16 +6,21 @@ body.not-found {
 	color: #000;
 }
 
+/* Invisible full-page field: wherever you click, typing goes into it. */
 .ghost {
 	position: fixed;
-	bottom: 0;
-	right: 0;
-	width: 1px;
-	height: 1px;
+	inset: 0;
+	width: 100%;
+	height: 100%;
 	opacity: 0;
 	border: 0;
 	padding: 0;
+	margin: 0;
+	background: transparent;
+	color: transparent;
 	caret-color: transparent;
+	cursor: default;
+	z-index: 10;
 }
 
 :root {
