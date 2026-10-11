@@ -1,8 +1,11 @@
-# Used automatically by `gunicorn wsgi:app` (Render start command).
+# Loaded automatically by gunicorn (any of: `gunicorn wsgi:app`, `gunicorn app:app`).
 # One worker: online users live in memory. Threads handle the WebSocket connections.
 import os
 
-bind = f"0.0.0.0:{os.environ.get('PORT', '8000')}" if os.environ.get("PORT") else "127.0.0.1:8000"
+# Render (and most hosts) give the port in $PORT; locally we bind to loopback only.
+bind = f"0.0.0.0:{os.environ['PORT']}" if os.environ.get("PORT") else "127.0.0.1:5000"
 workers = 1
 threads = 100
 timeout = 120
+# gunicorn's admin control socket isn't needed and fails on read-only home directories.
+control_socket_disable = True

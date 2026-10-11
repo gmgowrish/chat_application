@@ -107,6 +107,8 @@ pytest
 | Start command | `gunicorn wsgi:app` (settings come from `gunicorn.conf.py`: 1 worker, 100 threads, binds `$PORT`) |
 | Python | 3.13 (from `.python-version`) |
 
+> **Deploy fails with `Entry point ('gunicorn.workers', 'eventlet') not found`?** The service still has the old start command. Change it to `gunicorn wsgi:app` (Settings → Build & Deploy → Start Command). eventlet is no longer used.
+
 Render terminates HTTPS for you; the app detects Render automatically (`RENDER=true`), trusts its proxy headers and marks cookies `Secure`. A `render.yaml` blueprint is included for new services.
 
 Keep **one instance**: online users are held in memory.

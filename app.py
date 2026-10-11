@@ -264,11 +264,12 @@ def handle_update_username(data):
 
 
 if __name__ == "__main__":
-    # Development server only (localhost); use gunicorn in production (see README).
+    # Development server; use gunicorn in production (see README). Honors $PORT so that a
+    # `python app.py` start command also works on Render.
     socketio.run(
         app,
-        host="127.0.0.1",
-        port=5000,
+        host="0.0.0.0" if os.environ.get("PORT") else "127.0.0.1",
+        port=int(os.environ.get("PORT", 5000)),
         debug=os.environ.get("FLASK_DEBUG") == "1",
         allow_unsafe_werkzeug=True,
     )
