@@ -5,7 +5,8 @@ from sqlalchemy import delete
 
 import analytics
 from admin import FUNNY_URL
-from app import app, socketio, users, sid_by_id
+import app as server
+from app import app, socketio
 
 ADMIN = "/test-secret-panel-path-0123456789"
 PASSWORD = "correct horse battery staple"
@@ -16,8 +17,9 @@ def clean_db():
     with analytics.engine.begin() as conn:
         for table in (analytics.visits, analytics.chat_sessions, analytics.security_events, analytics.admin_state):
             conn.execute(delete(table))
-    users.clear()
-    sid_by_id.clear()
+    server.users.clear()
+    server.identities.clear()
+    server.id_by_token.clear()
     yield
 
 
@@ -73,7 +75,9 @@ def test_typing_on_a_normal_404_page_acts_like_a_wrong_password(client):
 def test_login_shows_dashboard_with_visits_and_chat_sessions(client):
     client.get("/", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/140.0 Safari/537.36"})
     key = base64.b64encode(b"\x04" + b"\x01" * 64).decode()
-    chatter = socketio.test_client(app, auth={"public_key": key}, headers={"User-Agent": "Mozilla/5.0 (iPhone) Safari/604.1"})
+    chatter = socketio.test_client(
+        app, auth={"public_key": key, "token": "t" * 43, "username": "Chatter", "gender": "female"},
+        headers={"User-Agent": "Mozilla/5.0 (iPhone) Safari/604.1"})
     assert chatter.is_connected()
 
     response = login(client)
@@ -83,7 +87,7 @@ def test_login_shows_dashboard_with_visits_and_chat_sessions(client):
     assert page.headers["Cache-Control"] == "no-store"
     html = page.get_data(as_text=True)
     assert "Chat analytics" in html and "Windows" in html and "iOS" in html
-    assert "Chatting now" in html and "User_" in html
+    assert "Chatting now" in html and "Chatter" in html
 
 
 def test_logout_all_devices_invalidates_every_session(client):

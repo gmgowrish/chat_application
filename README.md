@@ -16,12 +16,13 @@
 
 ## ✨ Features
 
-- 🔒 **End-to-end encryption**: messages are encrypted in the browser with the Web Crypto API; the server cannot read them
-- 🔢 **Safety numbers**: click anyone in the member list and compare the number with them, to prove nobody is in the middle
-- 🛡️ **Tamper and replay protection**: forged, re-routed or replayed messages are detected and dropped
-- ⚡ **Real-time messaging** over WebSockets
-- 🎲 **Instant identity**: every visitor gets a random username (`User_1234`) and a locally generated avatar
-- ✏️ **Change your username** (validated and unique); everyone sees the update live
+- 🔒 **End-to-end encryption**: messages, photos and files are encrypted in the browser with the Web Crypto API; the server cannot read them
+- 🙂 **Emoji verification** (like Telegram calls): tap someone and compare 8 emoji, or the 60-digit safety number. Verified people get a green shield, and you're warned if their key ever changes
+- 👤 **Stable identity**: your name, gender and encryption key are remembered on your device. Refreshing or switching the screen off doesn't create a "new" person, and nobody sees left/joined spam
+- 📬 **Never miss a message**: messages sent while your screen is off wait on the server (still encrypted) for up to an hour
+- 📷 **Encrypted photos and files**: take a photo with the camera, upload photos, videos or any file (up to 15 MB), drag and drop or paste; recipients save them to their device. Files are deleted from the server after 1 hour
+- 🟢 **Presence**: who's online, "recently active" with last seen, typing indicators, ✓ sent / ✓✓ delivered
+- ♂ ♀ ⚧ **Gender-themed avatars**, light and dark mode, mobile drawer layout
 - 🧱 **Hardened server**: strict Content-Security-Policy, rate limiting, input validation, same-origin WebSockets
 
 ---
@@ -47,7 +48,7 @@
 | **Per-sender sequence number** inside the ciphertext | Server cannot replay old messages |
 | **Safety number** (SHA-512 of both public keys) | Detects a server that swaps in its own keys |
 
-A group message is encrypted separately for each recipient, and the server delivers each copy only to its addressee.
+A group message is encrypted separately for each recipient, and the server delivers each copy only to its addressee. Files are encrypted once with a random key; the ciphertext goes to `POST /files` (one-time token, 1 hour lifetime) and the key travels inside the encrypted message.
 
 ### What it does *not* protect (yet)
 
@@ -56,7 +57,7 @@ Be honest with your users about these. Each one is addressed in [ROADMAP.md](ROA
 - **Unverified keys.** If people don't compare safety numbers, a malicious server could still intercept messages.
 - **Metadata.** The server sees who is online, usernames, who messages whom, when, and message sizes.
 - **The JavaScript itself.** A web app's code is delivered by the server, so a compromised server could ship a backdoored `chat.js`.
-- **Long-lived identity and forward secrecy.** Keys live only as long as the tab. There is no ratchet yet, and you must re-verify after a reload.
+- **Forward secrecy.** Each browser keeps one long-lived key (non-extractable, in IndexedDB). There is no ratchet yet.
 
 ---
 
@@ -64,6 +65,17 @@ Be honest with your users about these. Each one is addressed in [ROADMAP.md](ROA
 
 | Direction | Event | Payload |
 |---|---|---|
+| Client → server | `connect` (auth) | `{ public_key, token, username, gender, returning }`: refused without a valid P-256 key and identity token |
+| Server → client | `welcome` | `{ me, members: [{ id, username, gender, public_key, online, last_seen }] }` |
+| Server → others | `user_joined` | a new person (shown once) |
+| Server → others | `presence` | online/offline/key changes (silent, no chat message) |
+| Client → server | `send_message` (ack) | `{ envelopes: { <id>: { iv, ct } } }` → `{ ok, delivered, queued }` |
+| Server → recipient | `new_message` | `{ from, iv, ct }` |
+| Client → server | `file_upload_token` (ack) | → `{ token }` for one `POST /files` of ciphertext |
+| Client → server | `update_profile` (ack) | `{ username?, gender? }` |
+| Both | `typing` | `{ id }` |
+
+---|---|---|
 | Client → server | `connect` (auth) | `{ public_key }` (connection is refused without a valid P-256 key) |
 | Server → client | `welcome` | `{ id, username, members: [{ id, username, public_key }] }` |
 | Server → others | `user_joined` / `user_left` | `{ id, username, public_key }` / `{ id }` |
@@ -96,7 +108,8 @@ Open **http://127.0.0.1:5000/** in two browser tabs and start chatting.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+pytest                                   # server tests
+python tests/e2e/browser_check.py        # real-browser check (needs the app running + playwright)
 ```
 
 ### Deploy on Render

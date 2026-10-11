@@ -2,8 +2,10 @@
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+		<meta name="theme-color" content="#6366f1" />
 		<title>Secure Python Chat</title>
+		<link rel="icon" href="{{ url_for('static', filename='img/icon.svg') }}" type="image/svg+xml" />
 		<link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}" />
 		<script
 			src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.4/socket.io.min.js"
@@ -14,42 +16,213 @@
 		<script src="{{ url_for('static', filename='js/chat.js') }}" defer></script>
 	</head>
 	<body>
-		<div class="chat-container">
-			<div class="chat-header">
-				Python Chat
-				<span class="e2ee-badge" id="e2ee-status">🔒 Setting up encryption…</span>
-			</div>
-			<div class="username-container">
-				<span id="current-username"></span>
-				<input type="text" id="username-input" placeholder="New username" maxlength="24" autocomplete="off" />
-				<button id="update-username-button">Update Username</button>
-			</div>
-			<div class="chat-body">
-				<aside class="members">
-					<div class="members-title">Online · tap to verify</div>
-					<ul id="member-list"></ul>
-				</aside>
-				<div class="chat-messages" id="chat-messages" aria-live="polite"></div>
-			</div>
-			<div class="chat-input">
-				<input type="text" id="message-input" placeholder="Type your message..." maxlength="2000" autocomplete="off" disabled />
-				<button id="send-button" disabled>Send</button>
-			</div>
-			<p class="privacy-note">
-				Messages are end-to-end encrypted, so the server cannot read them. For security and abuse prevention the
-				server keeps connection metadata (IP address, browser, times, message counts) for 30 days.
-			</p>
+		<svg width="0" height="0" class="sprite" aria-hidden="true">
+			<symbol id="i-lock" viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3" /><rect x="4" y="10" width="16" height="11" rx="2.5" /></symbol>
+			<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+			<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></symbol>
+			<symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-3-7-7-1z" /></symbol>
+			<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+			<symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></symbol>
+			<symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><circle cx="9" cy="10" r="1.8" /><path d="M20 16l-5-5-8 8" /></symbol>
+			<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></symbol>
+			<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></symbol>
+			<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z" /></symbol>
+			<symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z" /><path d="M8.5 12l2.5 2.5 4.5-5" /></symbol>
+			<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4l9 16H3z" /><path d="M12 10v4M12 17.5v.5" /></symbol>
+			<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" /></symbol>
+			<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></symbol>
+			<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></symbol>
+			<symbol id="i-flip" viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-3l2 2M20 15a8 8 0 0 1-14 3l-2-2" /><path d="M20 4v4h-4M4 20v-4h4" /></symbol>
+			<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.5" /></symbol>
+		</svg>
+
+		<div class="app">
+			<aside class="sidebar" id="sidebar" aria-label="People">
+				<div class="sidebar-head">
+					<div class="brand">
+						<span class="brand-mark"><svg><use href="#i-lock" /></svg></span>
+						<span>Python Chat</span>
+					</div>
+					<div class="head-actions">
+						<button class="icon-btn" id="theme-toggle" aria-label="Toggle dark mode"><svg><use href="#i-moon" /></svg></button>
+						<button class="icon-btn mobile-only" id="close-sidebar" aria-label="Close"><svg><use href="#i-close" /></svg></button>
+					</div>
+				</div>
+
+				<button class="me-card" id="me-card" aria-label="Edit your profile">
+					<span class="avatar" id="me-avatar"></span>
+					<span class="me-text">
+						<span class="me-name" id="me-name">Connecting…</span>
+						<span class="me-sub" id="me-sub">Edit profile</span>
+					</span>
+				</button>
+
+				<div class="section-title">
+					<span>Online now</span>
+					<span class="count" id="online-count">0</span>
+				</div>
+				<div class="people-scroll">
+					<ul class="people" id="people"></ul>
+					<p class="people-empty" id="people-empty">Nobody else is online yet.</p>
+					<div class="section-title" id="away-title" hidden><span>Recently active</span></div>
+					<ul class="people away" id="people-away"></ul>
+				</div>
+
+				<div class="sidebar-foot">
+					<button class="link-btn" id="info-button"><svg><use href="#i-info" /></svg>How your privacy works</button>
+				</div>
+			</aside>
+			<div class="scrim" id="scrim"></div>
+
+			<main class="chat" id="chat">
+				<header class="chat-head">
+					<button class="icon-btn mobile-only" id="open-sidebar" aria-label="Show who is online"><svg><use href="#i-menu" /></svg></button>
+					<div class="room">
+						<div class="room-title"># Lobby</div>
+						<div class="room-sub" id="room-sub">Connecting…</div>
+					</div>
+					<button class="avatar-stack" id="avatar-stack" aria-label="Who is online"></button>
+					<span class="e2ee-pill" id="e2ee-pill"><svg><use href="#i-lock" /></svg><span>Encrypted</span></span>
+				</header>
+
+				<div class="messages" id="messages" aria-live="polite">
+					<div class="empty-state" id="empty-state">
+						<div class="empty-icon"><svg><use href="#i-lock" /></svg></div>
+						<h2>Your private lobby</h2>
+						<p>Messages, photos and files are end-to-end encrypted. Only the people here can read them, not even the server.</p>
+						<button class="btn" id="copy-link"><svg><use href="#i-link" /></svg>Copy invite link</button>
+					</div>
+				</div>
+
+				<div class="typing" id="typing" aria-live="polite"></div>
+
+				<form class="composer" id="composer" autocomplete="off">
+					<div class="attach">
+						<button type="button" class="icon-btn round" id="attach-button" aria-haspopup="menu" aria-expanded="false" aria-label="Attach" disabled>
+							<svg><use href="#i-plus" /></svg>
+						</button>
+						<div class="attach-menu" id="attach-menu" role="menu" hidden>
+							<button type="button" role="menuitem" data-action="camera"><svg><use href="#i-camera" /></svg>Take a photo</button>
+							<button type="button" role="menuitem" data-action="media"><svg><use href="#i-image" /></svg>Photo or video</button>
+							<button type="button" role="menuitem" data-action="file"><svg><use href="#i-file" /></svg>Any file</button>
+						</div>
+						<input type="file" id="media-input" accept="image/*,video/*" multiple hidden />
+						<input type="file" id="file-input" multiple hidden />
+						<input type="file" id="camera-input" accept="image/*" capture="environment" hidden />
+					</div>
+					<textarea id="message-input" rows="1" maxlength="2000" placeholder="Write an encrypted message…" aria-label="Message" disabled></textarea>
+					<button type="submit" class="send-btn" id="send-button" aria-label="Send" disabled><svg><use href="#i-send" /></svg></button>
+				</form>
+
+				<div class="drop-overlay" id="drop-overlay" hidden>
+					<div><svg><use href="#i-lock" /></svg><p>Drop to send encrypted</p></div>
+				</div>
+			</main>
 		</div>
 
-		<dialog id="verify-dialog">
-			<h3>Verify <span id="verify-name"></span></h3>
-			<p>
-				Compare this safety number with <strong id="verify-name-2"></strong> in person or over a call. If it
-				matches on both screens, nobody (not even the server) is reading your messages.
+		<div class="onboard" id="onboard" hidden>
+			<form class="onboard-card" id="onboard-form" autocomplete="off">
+				<span class="brand-mark big"><svg><use href="#i-lock" /></svg></span>
+				<h1>Welcome to Python Chat</h1>
+				<p class="muted">A private group chat. Everything you send is end-to-end encrypted.</p>
+				<label class="field-label" for="onboard-name">Your name</label>
+				<input id="onboard-name" maxlength="24" placeholder="e.g. Gowrish" autocomplete="nickname" required />
+				<span class="field-label">I am</span>
+				<div class="gender-grid" role="radiogroup" aria-label="Gender">
+					<label class="gender-option"><input type="radio" name="onboard-gender" value="male" /><span class="avatar g-male">♂</span><span>Male</span></label>
+					<label class="gender-option"><input type="radio" name="onboard-gender" value="female" /><span class="avatar g-female">♀</span><span>Female</span></label>
+					<label class="gender-option"><input type="radio" name="onboard-gender" value="transgender" /><span class="avatar g-transgender">⚧</span><span>Transgender</span></label>
+					<label class="gender-option"><input type="radio" name="onboard-gender" value="unspecified" /><span class="avatar g-unspecified">?</span><span>Prefer not to say</span></label>
+				</div>
+				<p class="form-error" id="onboard-error" role="alert"></p>
+				<button class="btn wide" id="onboard-submit">Join the chat</button>
+				<p class="hint center">Your name and encryption key are saved on this device, so you stay the same person when you refresh.</p>
+			</form>
+		</div>
+
+		<div class="toasts" id="toasts" aria-live="assertive"></div>
+
+		<dialog id="verify-dialog" class="sheet">
+			<div class="sheet-head">
+				<span class="avatar lg" id="verify-avatar"></span>
+				<div>
+					<h3 id="verify-title">Verify</h3>
+					<span class="trust-chip" id="verify-status"></span>
+				</div>
+				<button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close" /></svg></button>
+			</div>
+			<p class="sheet-text">
+				Call or meet <strong class="verify-name"></strong> and check that you both see the <strong>same emoji in the same order</strong>.
+				If they match, nobody (not even the server) can read your chat.
 			</p>
-			<pre id="safety-number"></pre>
-			<p class="hint">Keys are created fresh each time the page loads, so verify again after a reload.</p>
-			<button id="verify-close">Close</button>
+			<div class="emoji-grid" id="verify-emoji"></div>
+			<details class="numbers">
+				<summary>Compare numbers instead</summary>
+				<pre id="verify-numbers"></pre>
+			</details>
+			<div class="sheet-actions" id="verify-actions">
+				<button class="btn" id="verify-match">They match</button>
+				<button class="btn ghost" id="verify-mismatch">They don't match</button>
+			</div>
+			<p class="sheet-note" id="verify-note"></p>
+		</dialog>
+
+		<dialog id="profile-dialog" class="sheet">
+			<div class="sheet-head">
+				<span class="avatar lg" id="profile-avatar"></span>
+				<div><h3>Your profile</h3><span class="muted">Your name is visible to everyone online.</span></div>
+				<button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close" /></svg></button>
+			</div>
+			<form id="profile-form" class="profile-form">
+				<label for="profile-name">Display name</label>
+				<input id="profile-name" maxlength="24" autocomplete="nickname" required />
+				<p class="hint">2–24 letters, digits, spaces, _ or -</p>
+				<span class="field-label">I am</span>
+				<div class="gender-grid" role="radiogroup" aria-label="Gender">
+					<label class="gender-option"><input type="radio" name="profile-gender" value="male" /><span class="avatar g-male">♂</span><span>Male</span></label>
+					<label class="gender-option"><input type="radio" name="profile-gender" value="female" /><span class="avatar g-female">♀</span><span>Female</span></label>
+					<label class="gender-option"><input type="radio" name="profile-gender" value="transgender" /><span class="avatar g-transgender">⚧</span><span>Transgender</span></label>
+					<label class="gender-option"><input type="radio" name="profile-gender" value="unspecified" /><span class="avatar g-unspecified">?</span><span>Prefer not to say</span></label>
+				</div>
+				<p class="form-error" id="profile-error" role="alert"></p>
+				<button class="btn">Save</button>
+			</form>
+		</dialog>
+
+		<dialog id="camera-dialog" class="sheet camera-sheet">
+			<div class="sheet-head">
+				<h3>Take a photo</h3>
+				<button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close" /></svg></button>
+			</div>
+			<div class="camera-frame">
+				<video id="camera-video" playsinline muted></video>
+				<img id="camera-preview" alt="Captured photo preview" hidden />
+			</div>
+			<div class="sheet-actions">
+				<button class="icon-btn" id="camera-flip" aria-label="Switch camera"><svg><use href="#i-flip" /></svg></button>
+				<button class="shutter" id="camera-shutter" aria-label="Capture"></button>
+				<button class="btn ghost" id="camera-retake" hidden>Retake</button>
+				<button class="btn" id="camera-send" hidden>Send encrypted</button>
+			</div>
+		</dialog>
+
+		<dialog id="viewer-dialog" class="viewer">
+			<button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close" /></svg></button>
+			<img id="viewer-image" alt="" />
+			<a class="btn" id="viewer-download" download><svg><use href="#i-download" /></svg>Save to device</a>
+		</dialog>
+
+		<dialog id="info-dialog" class="sheet">
+			<div class="sheet-head">
+				<h3>How your privacy works</h3>
+				<button class="icon-btn" data-close aria-label="Close"><svg><use href="#i-close" /></svg></button>
+			</div>
+			<ul class="info-list">
+				<li><svg><use href="#i-lock" /></svg><span><strong>End-to-end encrypted.</strong> Messages, photos and files are encrypted in your browser (ECDH P-256 + AES-256-GCM). The server only relays ciphertext.</span></li>
+				<li><svg><use href="#i-shield-check" /></svg><span><strong>Verify people.</strong> Tap someone in the list and compare the emoji. Verified people get a green shield, and you'll be warned if their key ever changes.</span></li>
+				<li><svg><use href="#i-file" /></svg><span><strong>Files disappear.</strong> Encrypted files are deleted from the server after one hour.</span></li>
+				<li><svg><use href="#i-info" /></svg><span><strong>What the server keeps.</strong> For security and abuse prevention it logs connection metadata (IP address, browser, times, message counts) for 30 days. Never message content.</span></li>
+			</ul>
 		</dialog>
 	</body>
 </html>
