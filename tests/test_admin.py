@@ -178,3 +178,22 @@ def test_password_hash_setting_accepts_plain_text_by_mistake(monkeypatch, value,
     assert check_password_hash(reloaded.ADMIN_PASSWORD_HASH, "70199@gMg")
     monkeypatch.undo()
     importlib.reload(admin_module)
+
+
+def test_bots_are_hidden_by_default(client):
+    bot = {"User-Agent": "Go-http-client/1.1"}
+    human = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/141.0 Safari/537.36"}
+    client.get("/", headers=bot)
+    client.get("/", headers=human)
+    hidden = analytics.dashboard_data()
+    assert hidden["stats"]["visits_24h"] == 1
+    assert [v["device"] for v in hidden["recent_visits"]] == ["Desktop"]
+    assert hidden["hidden_bot_visits_7d"] == 1
+    shown = analytics.dashboard_data(include_bots=True)
+    assert shown["stats"]["visits_24h"] == 2
+
+    login(client)
+    page = client.get(ADMIN).get_data(as_text=True)
+    assert "Show bots (1 hidden this week)" in page and "Go-http-client" not in page
+    page = client.get(ADMIN + "?bots=1").get_data(as_text=True)
+    assert "Hide bots" in page and "Go-http-client" in page

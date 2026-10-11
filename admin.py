@@ -126,7 +126,8 @@ def init_admin(app, client_ip, online_users, roster=lambda: [], remove_person=la
         if not is_logged_in():
             return not_found_page()
         response = app.make_response(render_template(
-            "admin.html", data=analytics.dashboard_data(), online=online_users(), people=roster(),
+            "admin.html", data=analytics.dashboard_data(include_bots=request.args.get("bots") == "1"),
+            online=online_users(), people=roster(),
             csrf=session["csrf"], now=datetime.now(timezone.utc),
         ))
         return no_store(response)

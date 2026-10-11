@@ -207,42 +207,56 @@ def _rows(query):
         return [dict(row._mapping) for row in conn.execute(query)]
 
 
-def _count(table, column, since, distinct=None):
+def _count(table, column, since, distinct=None, extra=None):
     target = func.count(func.distinct(distinct)) if distinct is not None else func.count()
+    query = select(target).select_from(table).where(column >= since)
+    if extra is not None:
+        query = query.where(extra)
     with engine.connect() as conn:
-        return conn.execute(select(target).select_from(table).where(column >= since)).scalar_one()
+        return conn.execute(query).scalar_one()
 
 
-def _top(table, column, since, limit=6):
-    query = (
-        select(column.label("name"), func.count().label("count"))
-        .where(table.c[since[0]] >= since[1])
-        .group_by(column).order_by(func.count().desc()).limit(limit)
-    )
-    return _rows(query)
+def _top(table, column, since, extra=None, limit=6):
+    query = select(column.label("name"), func.count().label("count")).where(table.c[since[0]] >= since[1])
+    if extra is not None:
+        query = query.where(extra)
+    return _rows(query.group_by(column).order_by(func.count().desc()).limit(limit))
 
 
-def dashboard_data():
+def dashboard_data(include_bots=False):
+    """Everything the admin page shows. Bots are left out unless include_bots is set;
+    security events are always complete (bots probing the site belong there)."""
     day = now() - timedelta(days=1)
     week = now() - timedelta(days=7)
+    human_visit = None if include_bots else visits.c.device != "Bot"
+    human_session = None if include_bots else chat_sessions.c.device != "Bot"
+
+    sessions_query = select(chat_sessions).order_by(chat_sessions.c.connected_at.desc()).limit(100)
+    visits_query = select(visits).order_by(visits.c.ts.desc()).limit(100)
+    messages_query = select(func.coalesce(func.sum(chat_sessions.c.messages_sent), 0)).where(
+        chat_sessions.c.connected_at >= week)
+    if not include_bots:
+        sessions_query = sessions_query.where(human_session)
+        visits_query = visits_query.where(human_visit)
+        messages_query = messages_query.where(human_session)
     with engine.connect() as conn:
-        messages_week = conn.execute(
-            select(func.coalesce(func.sum(chat_sessions.c.messages_sent), 0))
-            .where(chat_sessions.c.connected_at >= week)
-        ).scalar_one()
+        messages_week = conn.execute(messages_query).scalar_one()
+
     return {
+        "include_bots": include_bots,
+        "hidden_bot_visits_7d": 0 if include_bots else _count(visits, visits.c.ts, week, extra=visits.c.device == "Bot"),
         "stats": {
-            "visits_24h": _count(visits, visits.c.ts, day),
-            "unique_ips_24h": _count(visits, visits.c.ts, day, distinct=visits.c.ip),
-            "unique_ips_7d": _count(visits, visits.c.ts, week, distinct=visits.c.ip),
-            "chat_sessions_7d": _count(chat_sessions, chat_sessions.c.connected_at, week),
+            "visits_24h": _count(visits, visits.c.ts, day, extra=human_visit),
+            "unique_ips_24h": _count(visits, visits.c.ts, day, distinct=visits.c.ip, extra=human_visit),
+            "unique_ips_7d": _count(visits, visits.c.ts, week, distinct=visits.c.ip, extra=human_visit),
+            "chat_sessions_7d": _count(chat_sessions, chat_sessions.c.connected_at, week, extra=human_session),
             "messages_7d": messages_week,
             "security_events_7d": _count(security_events, security_events.c.ts, week),
         },
-        "top_browsers": _top(visits, visits.c.browser, ("ts", week)),
-        "top_os": _top(visits, visits.c.os, ("ts", week)),
-        "top_devices": _top(visits, visits.c.device, ("ts", week)),
-        "recent_sessions": _rows(select(chat_sessions).order_by(chat_sessions.c.connected_at.desc()).limit(100)),
-        "recent_visits": _rows(select(visits).order_by(visits.c.ts.desc()).limit(100)),
+        "top_browsers": _top(visits, visits.c.browser, ("ts", week), human_visit),
+        "top_os": _top(visits, visits.c.os, ("ts", week), human_visit),
+        "top_devices": _top(visits, visits.c.device, ("ts", week), human_visit),
+        "recent_sessions": _rows(sessions_query),
+        "recent_visits": _rows(visits_query),
         "security": _rows(select(security_events).order_by(security_events.c.ts.desc()).limit(100)),
     }

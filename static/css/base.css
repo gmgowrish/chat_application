@@ -211,3 +211,23 @@ body.panel {
 	background: var(--panel-bad);
 	color: #fff;
 }
+
+.panel .header-actions {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.panel a.toggle {
+	color: var(--panel-accent);
+	font-size: 13px;
+	text-decoration: none;
+	border: 1px solid var(--panel-line);
+	border-radius: 8px;
+	padding: 6px 10px;
+}
+
+.panel a.toggle:hover {
+	border-color: var(--panel-accent);
+}
