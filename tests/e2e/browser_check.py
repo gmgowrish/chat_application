@@ -91,8 +91,10 @@ async def main():
         await shows(alice, f"{C} joined")
         check(True, "onboarding asks name + gender; joins announced once")
 
-        badges = await alice.eval_on_selector_all("#people .gbadge", "els => els.map(e => e.textContent)")
-        check(sorted(badges) == ["♂", "⚧"], f"gender badges shown in people list {badges}")
+        badges = await alice.eval_on_selector_all(
+            "#people .person", "rows => Object.fromEntries(rows.map(r => [r.querySelector('.person-name').textContent,"
+            " r.querySelector('.gbadge')?.textContent]))")
+        check(badges.get(B) == "♂" and badges.get(C) == "⚧", f"gender badges shown in people list {badges}")
 
         await say(alice, SECRETS[0])
         await shows(bob, SECRETS[0])
