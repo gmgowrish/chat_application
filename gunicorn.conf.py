@@ -9,3 +9,5 @@ threads = 100
 timeout = 120
 # gunicorn's admin control socket isn't needed and fails on read-only home directories.
 control_socket_disable = True
+# Open WebSockets would otherwise hold up restarts and deploys for 30 s; clients reconnect anyway.
+graceful_timeout = 5

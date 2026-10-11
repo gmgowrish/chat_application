@@ -13,6 +13,11 @@ def fake_public_key(seed):
     return base64.b64encode(b"\x04" + bytes([seed]) * 64).decode()
 
 
+def send(client, envelopes, msg_id=None):
+    msg_id = msg_id or secrets.token_urlsafe(12)
+    return client.emit("send_message", {"msg_id": msg_id, "envelopes": envelopes}, callback=True)
+
+
 def envelope(size=40):
     return {
         "iv": base64.b64encode(os.urandom(12)).decode(),
@@ -132,13 +137,34 @@ def test_messages_wait_in_mailbox_while_screen_is_off():
     bob.disconnect()
 
     payload = envelope()
-    result = alice.emit("send_message", {"envelopes": {bob_id: payload}}, callback=True)
-    assert result == {"ok": True, "delivered": 0, "queued": 1}
+    assert send(alice, {bob_id: payload}, msg_id="m" * 16) == {"ok": True, "recipients": 1}
 
     bob2 = connect(2, name="Bob", token=bob.token, returning=True)
     received = bob2.get_received()
     assert [e["name"] for e in received][:2] == ["welcome", "new_message"]
-    assert received[1]["args"][0] == {"from": alice_id, **payload}
+    assert received[1]["args"][0] == {"mid": "m" * 16, "from": alice_id, **payload}
+
+
+def test_messages_stay_queued_until_the_device_acknowledges_them():
+    """A phone whose screen went off may still look connected; nothing may be lost."""
+    alice = connect(1, name="Alice")
+    alice_id = welcome(alice)["me"]["id"]
+    bob = connect(2, name="Bob")
+    bob_id = welcome(bob)["me"]["id"]
+    alice.get_received()
+
+    send(alice, {bob_id: envelope()}, msg_id="a" * 16)
+    assert events(bob, "new_message")[0]["mid"] == "a" * 16
+    # Bob's connection silently dies before he acknowledges: the message is redelivered.
+    bob.disconnect()
+    bob2 = connect(2, name="Bob", token=bob.token, returning=True)
+    redelivered = [e["args"][0]["mid"] for e in bob2.get_received() if e["name"] == "new_message"]
+    assert redelivered == ["a" * 16]
+
+    # Once acknowledged, it is gone and Alice gets a delivery receipt.
+    bob2.emit("ack", {"mids": ["a" * 16]})
+    assert server.identities[bob_id]["mailbox"] == []
+    assert events(alice, "delivered") == [{"mid": "a" * 16, "by": bob_id}]
 
 
 # ------------------------------------------------------------------ messages
@@ -152,15 +178,15 @@ def test_ciphertext_is_routed_only_to_its_recipient():
         client.get_received()
 
     payload = envelope()
-    result = alice.emit("send_message", {"envelopes": {bob_id: payload}}, callback=True)
-    assert result == {"ok": True, "delivered": 1, "queued": 0}
-    assert events(bob, "new_message") == [{"from": alice_id, **payload}]
+    assert send(alice, {bob_id: payload}, msg_id="r" * 16) == {"ok": True, "recipients": 1}
+    assert events(bob, "new_message") == [{"mid": "r" * 16, "from": alice_id, **payload}]
     assert events(carol, "new_message") == []
     assert events(alice, "new_message") == []
 
 
-@pytest.mark.parametrize("data", [None, "hello", {"message": "plaintext is not accepted"}, {"envelopes": {}},
-                                  {"envelopes": "x"}])
+@pytest.mark.parametrize("data", [None, "hello", {"message": "plaintext is not accepted"},
+                                  {"msg_id": "x" * 16, "envelopes": {}}, {"msg_id": "x" * 16, "envelopes": "x"},
+                                  {"msg_id": "bad id!", "envelopes": {"a": {}}}, {"envelopes": {"a": {}}}])
 def test_malformed_messages_are_rejected(data):
     alice, bob = connect(1), connect(2)
     welcome(alice)
@@ -176,7 +202,7 @@ def test_bad_envelope_fields_are_rejected():
     bob_id = welcome(bob)["me"]["id"]
     bad_iv = {"iv": base64.b64encode(b"short").decode(), "ct": envelope()["ct"]}
     for bad in (bad_iv, envelope(20_000), {"iv": "!!", "ct": "!!"}):
-        assert alice.emit("send_message", {"envelopes": {bob_id: bad}}, callback=True)["ok"] is False
+        assert send(alice, {bob_id: bad})["ok"] is False
     assert events(bob, "new_message") == []
 
 
@@ -211,8 +237,7 @@ def test_rate_limit_blocks_floods():
     welcome(alice)
     bob_id = welcome(bob)["me"]["id"]
     bob.get_received()
-    results = [alice.emit("send_message", {"envelopes": {bob_id: envelope()}}, callback=True)["ok"]
-               for _ in range(30)]
+    results = [send(alice, {bob_id: envelope()})["ok"] for _ in range(30)]
     assert 10 <= results.count(True) < 15
     assert results[-1] is False
 

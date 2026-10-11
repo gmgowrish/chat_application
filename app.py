@@ -202,9 +202,12 @@ def download_file(file_id):
 # SHA-256 and maps it to a stable identity: public id, name, gender and public key.
 # Refreshing or switching the screen off therefore keeps the same person, name and
 # key. Nobody is announced as "left"; they just turn offline after a short grace
-# period, and messages sent meanwhile wait (still encrypted) in a small mailbox.
+# period. Every message waits (still encrypted) in the recipient's mailbox until
+# their device acknowledges it, so a phone whose screen switched off, which the
+# server may still think is connected, never loses messages.
 
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
+MSG_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,40}$")
 GENDERS = {"male", "female", "transgender", "unspecified"}
 PRESENCE_GRACE = float(os.environ.get("PRESENCE_GRACE_SECONDS", "20"))
 ROSTER_TTL = 24 * 3600          # offline people stay listed (and keep their name) for a day
@@ -322,7 +325,7 @@ def handle_connect(auth):
         ident["online"] = True
         ident["generation"] += 1
         ident["sids"].add(request.sid)
-        pending, ident["mailbox"] = ident["mailbox"], []
+        pending = list(ident["mailbox"])  # stays until acknowledged
 
         user_agent = request.headers.get("User-Agent", "")
         browser, system, device = analytics.parse_user_agent(user_agent)
@@ -350,8 +353,8 @@ def handle_connect(auth):
     conn["row_id"] = safely(analytics.start_chat_session, ident["id"], ident["username"], conn["ip"], user_agent)
     emit("welcome", {"me": me, "members": roster, "max_file_bytes": MAX_FILE_BYTES - 16,
                      "file_ttl": FILE_TTL_SECONDS})
-    for message in pending:
-        emit("new_message", message["payload"])
+    for entry in pending:
+        emit("new_message", entry["payload"])
     if is_new and not returning:
         emit("user_joined", me, broadcast=True, include_self=False)
     elif not was_online or key_changed or is_new:
@@ -385,12 +388,15 @@ def handle_message(data):
         if not take_token(conn):
             return fail("You are sending messages too fast.")
 
-        envelopes = data.get("envelopes") if isinstance(data, dict) else None
+        data = data if isinstance(data, dict) else {}
+        msg_id, envelopes = data.get("msg_id"), data.get("envelopes")
+        if not isinstance(msg_id, str) or not MSG_ID_RE.fullmatch(msg_id):
+            return fail("Malformed message.")
         if not isinstance(envelopes, dict) or not 0 < len(envelopes) <= MAX_RECIPIENTS:
             return fail("Malformed message.")
 
         sender = conn["identity"]
-        live, queued = [], 0
+        deliveries = []
         for recipient_id, envelope in envelopes.items():
             recipient = identities.get(recipient_id)
             if recipient is None or recipient is sender:
@@ -402,22 +408,49 @@ def handle_message(data):
             # AES-GCM: 12-byte IV, ciphertext is at least the 16-byte auth tag
             if iv is None or len(iv) != 12 or ciphertext is None or len(ciphertext) < 17:
                 return fail("Malformed message.")
-            payload = {"from": sender["id"], "iv": envelope["iv"], "ct": envelope["ct"]}
-            if recipient["sids"]:
-                live.extend((sid, payload) for sid in recipient["sids"])
-            else:
-                # Screen off / refreshing: keep the ciphertext until they reconnect.
-                recipient["mailbox"] = (recipient["mailbox"] + [
-                    {"payload": payload, "expires": time.time() + MAILBOX_TTL}])[-MAILBOX_MAX:]
-                queued += 1
-        delivered = len({sid for sid, _ in live})
-        if live or queued:
+            deliveries.append((recipient, envelope))
+
+        live = []
+        for recipient, envelope in deliveries:
+            payload = {"mid": msg_id, "from": sender["id"], "iv": envelope["iv"], "ct": envelope["ct"]}
+            # Kept until the recipient's device acknowledges it (see handle_ack).
+            recipient["mailbox"] = (recipient["mailbox"] + [
+                {"payload": payload, "sender": sender["id"], "expires": time.time() + MAILBOX_TTL}])[-MAILBOX_MAX:]
+            live.extend((sid, payload) for sid in recipient["sids"])
+        if deliveries:
             conn["messages"] += 1
-            conn["recipients"] += delivered + queued
+            conn["recipients"] += len(deliveries)
 
     for sid, payload in live:
         emit("new_message", payload, to=sid)
-    return {"ok": True, "delivered": delivered, "queued": queued}
+    return {"ok": True, "recipients": len(deliveries)}
+
+
+@socketio.on("ack")
+def handle_ack(data):
+    """The recipient's device has the message: drop it from the mailbox and tell the sender."""
+    mids = data.get("mids") if isinstance(data, dict) else None
+    if not isinstance(mids, list) or len(mids) > MAILBOX_MAX:
+        return
+    mids = {m for m in mids if isinstance(m, str) and MSG_ID_RE.fullmatch(m)}
+    receipts = []
+    with users_lock:
+        conn = users.get(request.sid)
+        if not conn:
+            return
+        ident = conn["identity"]
+        keep = []
+        for entry in ident["mailbox"]:
+            if entry["payload"]["mid"] in mids:
+                sender = identities.get(entry["sender"])
+                if sender:
+                    receipts.extend((sid, entry["payload"]["mid"]) for sid in sender["sids"])
+            else:
+                keep.append(entry)
+        ident["mailbox"] = keep
+        reader = ident["id"]
+    for sid, mid in receipts:
+        emit("delivered", {"mid": mid, "by": reader}, to=sid)
 
 
 @socketio.on("typing")

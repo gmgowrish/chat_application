@@ -427,17 +427,32 @@ async function main() {
 		return { row, bubble, ticks };
 	}
 
+	const awaitingReceipt = new Map(); // msg id -> { ticks, readers: Set }
+
 	function setTicks(ticks, result) {
 		if (!result?.ok) {
 			ticks.textContent = "⚠";
 			ticks.title = result?.error || "Not sent";
-		} else if (result.delivered > 0) {
-			ticks.textContent = "✓✓";
-			ticks.title = `Delivered to ${result.delivered} online${result.queued ? `, ${result.queued} will get it when back` : ""}`;
-		} else {
-			ticks.textContent = "✓";
-			ticks.title = "Sent. Delivered when they come back online";
+			return;
 		}
+		ticks.textContent = "✓";
+		ticks.title = "Sent. Waiting for their device to receive it";
+		awaitingReceipt.set(result.msg_id, { ticks, readers: new Set(), total: result.recipients });
+		for (const by of earlyReceipts.get(result.msg_id) || []) markDelivered({ mid: result.msg_id, by });
+		earlyReceipts.delete(result.msg_id);
+	}
+
+	const earlyReceipts = new Map(); // receipts that beat the send acknowledgement
+
+	function markDelivered({ mid, by }) {
+		const entry = awaitingReceipt.get(mid);
+		if (!entry) {
+			earlyReceipts.set(mid, [...(earlyReceipts.get(mid) || []), by]);
+			return;
+		}
+		entry.readers.add(by);
+		entry.ticks.textContent = "✓✓";
+		entry.ticks.title = `Delivered to ${entry.readers.size} of ${entry.total}`;
 	}
 
 	const fileCache = new Map(); // file id -> Promise<object URL>
@@ -546,7 +561,13 @@ async function main() {
 
 	// ---------------- receiving
 
-	async function receive({ from, iv, ct }) {
+	async function receive(envelope) {
+		await decryptAndShow(envelope);
+		// Acknowledge even failures, so the server doesn't keep redelivering them.
+		if (typeof envelope.mid === "string") socket?.emit("ack", { mids: [envelope.mid] });
+	}
+
+	async function decryptAndShow({ from, iv, ct }) {
 		const sender = roster.get(from);
 		if (!sender?.public_key) return;
 		try {
@@ -595,9 +616,12 @@ async function main() {
 	}
 
 	async function deliver(payload) {
-		const envelopes = await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: randomToken(12) })));
+		const msgId = randomToken(12);
+		const envelopes = await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: msgId })));
 		if (!Object.keys(envelopes).length) return { ok: false, error: "Nobody else is here yet" };
-		return socket.timeout(15000).emitWithAck("send_message", { envelopes }).catch(() => ({ ok: false, error: "Timed out" }));
+		const result = await socket.timeout(15000).emitWithAck("send_message", { msg_id: msgId, envelopes })
+			.catch(() => ({ ok: false, error: "Timed out" }));
+		return { ...result, msg_id: msgId };
 	}
 
 	function sendText(text) {
@@ -1032,6 +1056,8 @@ async function main() {
 			renderPeople();
 			setTimeout(renderPeople, 3600);
 		});
+
+		socket.on("delivered", markDelivered);
 
 		socket.on("new_message", (data) => {
 			incoming = incoming.then(() => receive(data));
