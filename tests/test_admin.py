@@ -161,3 +161,20 @@ def test_plain_admin_password_setting(monkeypatch):
     assert check_password_hash(reloaded.ADMIN_PASSWORD_HASH, "70199@gMg")
     monkeypatch.undo()
     importlib.reload(admin_module)
+
+
+@pytest.mark.parametrize("value, source", [
+    ("70199@gMg", "ADMIN_PASSWORD_HASH (plain password, accepted)"),
+    (None, "ADMIN_PASSWORD_HASH (hash)"),
+])
+def test_password_hash_setting_accepts_plain_text_by_mistake(monkeypatch, value, source):
+    import importlib
+    from werkzeug.security import check_password_hash, generate_password_hash
+    import admin as admin_module
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", value or generate_password_hash("70199@gMg"))
+    reloaded = importlib.reload(admin_module)
+    assert reloaded.PASSWORD_SOURCE == source
+    assert check_password_hash(reloaded.ADMIN_PASSWORD_HASH, "70199@gMg")
+    monkeypatch.undo()
+    importlib.reload(admin_module)

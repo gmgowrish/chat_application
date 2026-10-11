@@ -12,6 +12,7 @@
 """
 import hmac
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -27,11 +28,25 @@ def _setting(name):
 
 
 ADMIN_PATH = _setting("ADMIN_PATH").strip("/")
-# ADMIN_PASSWORD (plain, hashed here at startup) is easier to paste than a long hash;
-# when both are set, the plain password wins.
-ADMIN_PASSWORD_HASH = (
-    generate_password_hash(_setting("ADMIN_PASSWORD")) if _setting("ADMIN_PASSWORD") else _setting("ADMIN_PASSWORD_HASH")
-)
+def _looks_like_hash(value):
+    return bool(re.fullmatch(r"(scrypt|pbkdf2)(:[\w-]+)*\$[^$]+\$[0-9a-f]+", value))
+
+
+def _password_setting():
+    """Returns (hash, source). ADMIN_PASSWORD (plain) wins; a plain password pasted into
+    ADMIN_PASSWORD_HASH by mistake is also accepted and hashed here."""
+    plain = _setting("ADMIN_PASSWORD")
+    if plain:
+        return generate_password_hash(plain), "ADMIN_PASSWORD"
+    value = _setting("ADMIN_PASSWORD_HASH")
+    if not value:
+        return "", "none"
+    if _looks_like_hash(value):
+        return value, "ADMIN_PASSWORD_HASH (hash)"
+    return generate_password_hash(value), "ADMIN_PASSWORD_HASH (plain password, accepted)"
+
+
+ADMIN_PASSWORD_HASH, PASSWORD_SOURCE = _password_setting()
 ADMIN_ALLOWED_IPS = {ip.strip() for ip in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",") if ip.strip()}
 FUNNY_URL = os.environ.get("FUNNY_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 MAX_STRIKES = 3
@@ -45,7 +60,7 @@ DECOY_PATHS = {
 
 def startup_report():
     """One log line so the owner can check the setup in Render's logs (never prints secrets)."""
-    source = "ADMIN_PASSWORD" if _setting("ADMIN_PASSWORD") else "ADMIN_PASSWORD_HASH" if ADMIN_PASSWORD_HASH else "none"
+    source = PASSWORD_SOURCE
     state = "ENABLED" if enabled() else "DISABLED"
     print(f"[admin] dashboard {state} | ADMIN_PATH length={len(ADMIN_PATH)} (needs >= 16) | "
           f"password from {source} | ADMIN_PATH starts with {ADMIN_PATH[:4]!r}", flush=True)
