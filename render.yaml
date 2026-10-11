@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: secure-chat
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app
+    autoDeploy: true
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      # Private values: set these by hand in the Render dashboard, never in git.
+      - key: ADMIN_PATH
+        sync: false
+      - key: ADMIN_PASSWORD_HASH
+        sync: false
+      - key: DATABASE_URL
+        sync: false

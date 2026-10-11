@@ -24,3 +24,11 @@ pip-selfcheck.json
 node_modules/
 /dist/
 .venv/
+
+# Test cache
+.pytest_cache/
+__pycache__/
+
+# Local analytics database and secrets
+data/
+*.env
