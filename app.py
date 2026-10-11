@@ -129,7 +129,8 @@ def online_users():
         )
 
 
-init_admin(app, client_ip, online_users)
+# Lambdas: the roster helpers are defined further down.
+init_admin(app, client_ip, online_users, lambda: roster_for_admin(), lambda ident_id: remove_person(ident_id))
 
 
 @app.route("/")
@@ -210,7 +211,7 @@ TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}$")
 MSG_ID_RE = re.compile(r"^[A-Za-z0-9_-]{12,40}$")
 GENDERS = {"male", "female", "transgender", "unspecified"}
 PRESENCE_GRACE = float(os.environ.get("PRESENCE_GRACE_SECONDS", "20"))
-ROSTER_TTL = 24 * 3600          # offline people stay listed (and keep their name) for a day
+ROSTER_TTL = 2 * 3600           # offline people stay listed (and keep their name) for 2 hours
 MAILBOX_TTL = 3600              # undelivered ciphertext is kept for an hour...
 MAILBOX_MAX = 200               # ...and at most this many messages per person
 
@@ -241,6 +242,32 @@ def prune_roster():
         if not ident["sids"] and not ident["online"] and now - ident["last_seen"] / 1000 > ROSTER_TTL:
             identities.pop(ident["id"], None)
             id_by_token.pop(ident["token_hash"], None)
+
+
+def roster_for_admin():
+    with users_lock:
+        prune_roster()
+        people = [{
+            "id": i["id"], "username": i["username"], "gender": i["gender"], "online": i["online"],
+            "connections": len(i["sids"]), "pending": len(i["mailbox"]),
+            "last_seen": datetime.fromtimestamp(i["last_seen"] / 1000, timezone.utc) if i["last_seen"] else None,
+        } for i in identities.values()]
+    return sorted(people, key=lambda p: (not p["online"], p["username"].lower()))
+
+
+def remove_person(ident_id):
+    """Admin action: take someone off everyone's list, disconnect them and free their name."""
+    with users_lock:
+        ident = identities.pop(ident_id, None)
+        if ident is None:
+            return False
+        id_by_token.pop(ident["token_hash"], None)
+        sids = list(ident["sids"])
+    for sid in sids:
+        socketio.emit("removed", {}, to=sid)
+        socketio.server.disconnect(sid, namespace="/")
+    socketio.emit("user_removed", {"id": ident_id})
+    return True
 
 
 def mark_offline_later(ident_id, generation):

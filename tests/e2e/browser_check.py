@@ -23,7 +23,7 @@ PNG = base64.b64decode(
 DOC = b"%PDF-1.4 pretend document " + os.urandom(64)
 
 RUN = os.urandom(2).hex()  # names stay reserved for 24 h, so each run uses fresh ones
-A, B, C = f"Alice-{RUN}", f"Bob-{RUN}", f"Carol-{RUN}"
+A, B, C, D = f"Alice-{RUN}", f"Bob-{RUN}", f"Carol-{RUN}", f"Dave-{RUN}"
 frames, problems = [], []
 
 
@@ -111,6 +111,8 @@ async def main():
         await bob.wait_for_function("() => !document.getElementById('message-input').disabled")
         check(await bob.is_hidden("#onboard"), "refresh does not ask for the name again")
         check(await bob.inner_text("#me-name") == B, "name sticks after refresh")
+        await shows(bob, SECRETS[0])
+        check(True, "chat history survives refresh")
         await alice.wait_for_timeout(1500)
         transcript = await text_of(alice)
         check("left" not in transcript and transcript.count(f"{B} joined") == 1, "no left/joined spam on refresh")
@@ -168,6 +170,15 @@ async def main():
             timeout=20000)
         check(True, "camera photo captured, encrypted and received")
 
+        # A latecomer sees the earlier conversation, shared (encrypted) by an online member
+        d_ctx = await browser.new_context()
+        dave = await join(d_ctx, D, "male")
+        await shows(dave, "Earlier messages · shared by", timeout=20000)
+        await shows(dave, SECRETS[0])
+        await shows(dave, SECRETS[2])
+        check(True, "newcomer sees past messages")
+        await d_ctx.close()
+
         # Typing indicator
         await carol.fill("#message-input", "typing something")
         await alice.wait_for_function("() => document.getElementById('typing').innerText.includes('%s is typing')" % C)
@@ -184,7 +195,7 @@ async def main():
             await fresh.wait_for_selector("#onboard:not([hidden])")
             await fresh.screenshot(path=f"{SHOTS}/0-onboarding.png")
 
-        leaked = [f for f in frames if any(s in f for s in SECRETS) or "pretend document" in f]
+        leaked = [f for f in frames if any(s in f for s in SECRETS) or "pretend document" in f or "items" in f]
         check(not leaked, f"no plaintext in {len(frames)} WebSocket frames")
         overflow = await bob.evaluate("() => document.documentElement.scrollWidth > window.innerWidth")
         check(not overflow, "no horizontal scrolling on mobile")

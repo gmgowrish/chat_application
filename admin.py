@@ -48,10 +48,11 @@ def no_store(response):
     return response
 
 
-def init_admin(app, client_ip, online_users):
+def init_admin(app, client_ip, online_users, roster=lambda: [], remove_person=lambda _id: False):
     """Wire the hidden admin into `app`.
 
-    client_ip() -> the visitor's IP; online_users() -> list of live session dicts.
+    client_ip() -> the visitor's IP; online_users() -> list of live connection dicts;
+    roster() -> everyone in the chat (online + recently active); remove_person(id).
     """
 
     def strike(kind):
@@ -91,13 +92,18 @@ def init_admin(app, client_ip, online_users):
         if not is_logged_in():
             return not_found_page()
         response = app.make_response(render_template(
-            "admin.html", data=analytics.dashboard_data(), online=online_users(),
+            "admin.html", data=analytics.dashboard_data(), online=online_users(), people=roster(),
             csrf=session["csrf"], now=datetime.now(timezone.utc),
         ))
         return no_store(response)
 
     def handle_post():
         action = request.form.get("action")
+        if action == "remove_person":
+            if not is_logged_in() or not hmac.compare_digest(request.form.get("csrf", ""), session.get("csrf", "")):
+                abort(404)
+            remove_person(request.form.get("person_id", ""))
+            return redirect(request.path, code=303)
         if action in ("logout", "logout_all"):
             if not is_logged_in() or not hmac.compare_digest(request.form.get("csrf", ""), session.get("csrf", "")):
                 abort(404)

@@ -105,3 +105,35 @@ def test_user_agent_parsing():
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/140.0 Mobile Safari/537.36"
     ) == ("Chrome", "Android", "Mobile")
     assert analytics.parse_user_agent("curl/8.9")[2] == "Bot"
+
+
+def test_admin_can_remove_a_person_from_the_chat(client):
+    def join(seed, name):
+        return socketio.test_client(app, auth={
+            "public_key": base64.b64encode(b"\x04" + bytes([seed]) * 64).decode(),
+            "token": f"{name}-token".ljust(40, "x"), "username": name, "gender": "male"})
+
+    alice, bob = join(1, "Alice"), join(2, "Bob")
+    bob_id = [e for e in alice.get_received() if e["name"] == "user_joined"][0]["args"][0]["id"]
+
+    login(client)
+    page = client.get(ADMIN).get_data(as_text=True)
+    assert "People in the chat" in page and "Remove" in page and "Bob" in page
+    with client.session_transaction() as sess:
+        csrf = sess["csrf"]
+
+    # without the CSRF token nothing happens
+    client.post(ADMIN, data={"action": "remove_person", "person_id": bob_id})
+    assert bob_id in server.identities
+
+    response = client.post(ADMIN, data={"action": "remove_person", "person_id": bob_id, "csrf": csrf})
+    assert response.status_code == 303
+    assert bob_id not in server.identities
+    assert not bob.is_connected()
+    assert {"id": bob_id} in [e["args"][0] for e in alice.get_received() if e["name"] == "user_removed"]
+    # the name is free again
+    assert join(3, "Bob").is_connected()
+
+
+def test_recently_active_window_is_two_hours():
+    assert server.ROSTER_TTL == 2 * 3600

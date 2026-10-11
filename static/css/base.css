@@ -187,3 +187,22 @@ body.panel {
 		padding-right: 16px;
 	}
 }
+
+.panel form.inline {
+	display: inline;
+}
+
+.panel button.danger {
+	background: none;
+	border: 1px solid var(--panel-bad);
+	color: var(--panel-bad);
+	border-radius: 8px;
+	padding: 4px 12px;
+	cursor: pointer;
+	font: inherit;
+}
+
+.panel button.danger:hover {
+	background: var(--panel-bad);
+	color: #fff;
+}

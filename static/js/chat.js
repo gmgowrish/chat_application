@@ -130,8 +130,12 @@ function toast(message, type = "info") {
 
 function openKeyStore() {
 	return new Promise((resolve, reject) => {
-		const request = indexedDB.open("python-chat", 1);
-		request.onupgradeneeded = () => request.result.createObjectStore("keys");
+		const request = indexedDB.open("python-chat", 2);
+		request.onupgradeneeded = () => {
+			const db = request.result;
+			if (!db.objectStoreNames.contains("keys")) db.createObjectStore("keys");
+			if (!db.objectStoreNames.contains("messages")) db.createObjectStore("messages", { keyPath: "key" });
+		};
 		request.onsuccess = () => resolve(request.result);
 		request.onerror = () => reject(request.error);
 	});
@@ -245,6 +249,57 @@ async function main() {
 	const verified = store.get("verified", {});
 	const savePins = () => store.set("pins", pins);
 	const saveVerified = () => store.set("verified", verified);
+
+	// ---------------- local history (this device only)
+
+	const HISTORY_MAX = 300;
+	const SHARE_MAX = 100;
+	let historyDb = null;
+	try {
+		historyDb = await openKeyStore();
+	} catch {
+		/* no IndexedDB: history lasts for this tab only */
+	}
+
+	function historyPut(record) {
+		try {
+			historyDb?.transaction("messages", "readwrite").objectStore("messages").put(record);
+		} catch {
+			/* ignore */
+		}
+	}
+
+	function historyAll() {
+		if (!historyDb) return Promise.resolve([]);
+		return new Promise((resolve) => {
+			const req = historyDb.transaction("messages").objectStore("messages").getAll();
+			req.onsuccess = () => resolve(req.result.sort((a, b) => a.ts - b.ts));
+			req.onerror = () => resolve([]);
+		});
+	}
+
+	async function historyTrim() {
+		const all = await historyAll();
+		if (all.length <= HISTORY_MAX) return;
+		const tx = historyDb.transaction("messages", "readwrite");
+		all.slice(0, all.length - HISTORY_MAX).forEach((r) => tx.objectStore("messages").delete(r.key));
+	}
+
+	function remember({ id, from, ts, text, file, out }) {
+		const author = out ? me : roster.get(from) || {};
+		historyPut({ key: `${from}:${id}`, id, from, name: author.username || "Unknown", gender: author.gender || "unspecified", ts, text: text || "", file: file || null, out: Boolean(out) });
+		historyTrim();
+	}
+
+	let historyLoaded = false;
+	async function loadHistory() {
+		if (historyLoaded) return;
+		historyLoaded = true;
+		for (const r of await historyAll()) {
+			seen.add(r.key);
+			addMessage({ from: r.from, ts: r.ts, text: r.text, file: r.file, outgoing: r.out, author: { username: r.name, gender: r.gender }, history: true });
+		}
+	}
 
 	function trustState(person) {
 		if (pins[person.username] && pins[person.username] !== person.public_key) return "changed";
@@ -405,9 +460,9 @@ async function main() {
 		scrollToEnd();
 	}
 
-	function addMessage({ from, ts, text, file, outgoing: isOut, localUrl }) {
+	function addMessage({ from, ts, text, file, outgoing: isOut, localUrl, author, into, history }) {
 		hideEmpty();
-		const sender = isOut ? me : roster.get(from) || { username: "Unknown", gender: "unspecified" };
+		const sender = (isOut ? me : null) || author || roster.get(from) || { username: "Unknown", gender: "unspecified" };
 		const grouped = lastRendered && lastRendered.from === from && ts - lastRendered.ts < GROUP_WINDOW_MS;
 		lastRendered = { from, ts };
 
@@ -418,11 +473,11 @@ async function main() {
 		if (text) bubble.append(el("div", "text", text));
 		const meta = el("div", "meta");
 		meta.append(el("span", "", clock(ts)));
-		const ticks = el("span", "ticks", isOut ? "🕓" : "");
+		const ticks = el("span", "ticks", isOut && !history ? "🕓" : "");
 		if (isOut) meta.append(ticks);
 		bubble.append(meta);
 		row.append(avatar(sender, "sm"), bubble);
-		ui.messages.append(row);
+		(into || ui.messages).append(row);
 		scrollToEnd();
 		return { row, bubble, ticks };
 	}
@@ -457,13 +512,17 @@ async function main() {
 
 	const fileCache = new Map(); // file id -> Promise<object URL>
 
+	async function fetchAndDecrypt(file) {
+		const response = await fetch(`/files/${encodeURIComponent(file.id)}`, { credentials: "same-origin" });
+		if (!response.ok) throw new Error(response.status === 404 ? "This file has expired" : "Download failed");
+		const key = await crypto.subtle.importKey("raw", fromBase64(file.key), "AES-GCM", false, ["decrypt"]);
+		return crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(file.iv) }, key, await response.arrayBuffer());
+	}
+
 	function decryptFile(file) {
 		if (!fileCache.has(file.id)) {
 			fileCache.set(file.id, (async () => {
-				const response = await fetch(`/files/${encodeURIComponent(file.id)}`, { credentials: "same-origin" });
-				if (!response.ok) throw new Error(response.status === 404 ? "This file has expired" : "Download failed");
-				const key = await crypto.subtle.importKey("raw", fromBase64(file.key), "AES-GCM", false, ["decrypt"]);
-				const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromBase64(file.iv) }, key, await response.arrayBuffer());
+				const plain = await fetchAndDecrypt(file);
 				// Only known images/videos keep their type; everything else is an opaque
 				// download so HTML/SVG can never run inside this page.
 				const type = SAFE_IMAGES.includes(file.type) || SAFE_VIDEOS.includes(file.type) ? file.type : "application/octet-stream";
@@ -581,15 +640,80 @@ async function main() {
 			if (typeof message.id !== "string" || seen.has(id)) return; // replayed
 			if (typeof message.ts !== "number" || Math.abs(Date.now() - message.ts) > MAX_MESSAGE_AGE_MS) return;
 			seen.add(id);
+			if (message.type === "history") return showSharedHistory(sender, validFile(message.file));
 			const text = typeof message.text === "string" ? message.text.slice(0, MAX_MESSAGE_LENGTH) : "";
 			const file = validFile(message.file);
 			if (!text && !file) return;
 			typingUntil.delete(from);
 			addMessage({ from, ts: message.ts, text, file, outgoing: false });
+			remember({ id: message.id, from, ts: message.ts, text, file });
 			renderPeople();
 		} catch {
 			addSystem(`A message from ${sender.username} could not be verified and was dropped.`, true);
 		}
+	}
+
+	// ---------------- past messages for newcomers
+	//
+	// The server can't read history, so when someone new joins, one online member's
+	// browser (the one with the smallest id, so only one does it) encrypts the last
+	// messages it has into a bundle for them. It is shown as "shared by <name>".
+
+	async function shareHistoryWith(person) {
+		if (!person?.public_key || !me) return;
+		const online = [me, ...[...roster.values()].filter((p) => p.online && p.id !== person.id)];
+		online.sort((a, b) => (a.id < b.id ? -1 : 1));
+		if (online[0].id !== me.id) return;
+		const items = (await historyAll()).slice(-SHARE_MAX).map((r) => ({
+			id: r.id, from: r.from, name: r.name, gender: r.gender, ts: r.ts, text: r.text, file: r.file,
+		}));
+		if (!items.length) return;
+		outgoing = outgoing.then(async () => {
+			const bytes = encoder.encode(JSON.stringify({ items }));
+			const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+			const iv = crypto.getRandomValues(new Uint8Array(12));
+			const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, bytes);
+			const grant = await socket.timeout(10000).emitWithAck("file_upload_token");
+			if (!grant?.ok) return;
+			const { id } = await uploadEncrypted(new Blob([ciphertext]), grant.token, () => {});
+			const file = { id, key: toBase64(await crypto.subtle.exportKey("raw", key)), iv: toBase64(iv), name: "history.json", type: "application/json", size: bytes.length };
+			await deliver({ type: "history", ts: Date.now(), file }, randomToken(12), [person]);
+		}).catch(() => {});
+	}
+
+	async function showSharedHistory(sender, file) {
+		if (!file) return;
+		let items;
+		try {
+			items = JSON.parse(decoder.decode(await fetchAndDecrypt(file))).items;
+		} catch {
+			return;
+		}
+		if (!Array.isArray(items)) return;
+		const fresh = items.filter((it) =>
+			it && typeof it.id === "string" && it.id.length <= 40 && typeof it.from === "string" && typeof it.ts === "number" &&
+			typeof it.name === "string" && (typeof it.text === "string" || it.file) && !seen.has(`${it.from}:${it.id}`) && it.from !== me.id
+		).slice(-SHARE_MAX);
+		if (!fresh.length) return;
+		const block = el("div", "history-block");
+		const chip = el("div", "system");
+		chip.append(el("span", "", `Earlier messages · shared by ${sender.username}`));
+		block.append(chip);
+		const saved = lastRendered;
+		lastRendered = null;
+		for (const it of fresh) {
+			const key = `${it.from}:${it.id}`;
+			seen.add(key);
+			const author = { username: it.name.slice(0, 24), gender: GENDER_SYMBOL[it.gender] !== undefined ? it.gender : "unspecified" };
+			const text = typeof it.text === "string" ? it.text.slice(0, MAX_MESSAGE_LENGTH) : "";
+			const itemFile = validFile(it.file);
+			addMessage({ from: it.from, ts: it.ts, text, file: itemFile, outgoing: false, author, into: block, history: true });
+			historyPut({ key, id: it.id, from: it.from, name: author.username, gender: author.gender, ts: it.ts, text, file: itemFile, out: false });
+		}
+		lastRendered = saved;
+		ui.messages.insertBefore(block, ui.empty.nextSibling);
+		chip.scrollIntoView({ block: "start" });
+		historyTrim();
 	}
 
 	function validFile(file) {
@@ -600,9 +724,9 @@ async function main() {
 
 	// ---------------- sending
 
-	async function encryptFor(plaintext) {
+	async function encryptFor(plaintext, people = roster.values()) {
 		const envelopes = {};
-		for (const person of roster.values()) {
+		for (const person of people) {
 			if (!person.public_key) continue;
 			const iv = crypto.getRandomValues(new Uint8Array(12));
 			const ciphertext = await crypto.subtle.encrypt(
@@ -615,9 +739,8 @@ async function main() {
 		return envelopes;
 	}
 
-	async function deliver(payload) {
-		const msgId = randomToken(12);
-		const envelopes = await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: msgId })));
+	async function deliver(payload, msgId = randomToken(12), people = undefined) {
+		const envelopes = await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: msgId })), people);
 		if (!Object.keys(envelopes).length) return { ok: false, error: "Nobody else is here yet" };
 		const result = await socket.timeout(15000).emitWithAck("send_message", { msg_id: msgId, envelopes })
 			.catch(() => ({ ok: false, error: "Timed out" }));
@@ -630,8 +753,10 @@ async function main() {
 			return false;
 		}
 		const ts = Date.now();
+		const id = randomToken(12);
 		const { ticks } = addMessage({ from: me.id, ts, text, outgoing: true });
-		outgoing = outgoing.then(async () => setTicks(ticks, await deliver({ text, ts })));
+		remember({ id, from: me.id, ts, text, out: true });
+		outgoing = outgoing.then(async () => setTicks(ticks, await deliver({ text, ts }, id)));
 		return true;
 	}
 
@@ -676,7 +801,10 @@ async function main() {
 				if (!grant?.ok) throw new Error(grant?.error || "Upload refused");
 				const { id } = await uploadEncrypted(new Blob([ciphertext]), grant.token, (p) => (fill.style.width = `${Math.round(p * 100)}%`));
 				const rawKey = toBase64(await crypto.subtle.exportKey("raw", key));
-				const result = await deliver({ ts, file: { ...meta, id, key: rawKey, iv: toBase64(iv) } });
+				const sentFile = { ...meta, id, key: rawKey, iv: toBase64(iv) };
+				const msgId = randomToken(12);
+				remember({ id: msgId, from: me.id, ts, file: sentFile, out: true });
+				const result = await deliver({ ts, file: sentFile }, msgId);
 				bar.remove();
 				setTicks(ticks, result);
 				if (!localUrl || !(SAFE_IMAGES.includes(type) || SAFE_VIDEOS.includes(type))) {
@@ -1020,6 +1148,7 @@ async function main() {
 			renderMe();
 			renderPeople();
 			setOnline(true);
+			incoming = incoming.then(loadHistory); // before any redelivered messages
 			if (window.matchMedia("(min-width: 821px)").matches) ui.input.focus();
 		});
 
@@ -1027,6 +1156,16 @@ async function main() {
 			upsert(person);
 			addSystem(`${person.username} joined`);
 			renderPeople();
+			shareHistoryWith(person);
+		});
+
+		socket.on("user_removed", ({ id }) => {
+			roster.delete(id);
+			renderPeople();
+		});
+
+		socket.on("removed", () => {
+			toast("You were removed from the chat. Reload the page to join again.", "error");
 		});
 
 		socket.on("presence", (person) => {

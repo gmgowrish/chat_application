@@ -55,6 +55,32 @@
 				{% else %}<p class="muted">Nobody is connected right now.</p>{% endif %}
 			</section>
 
+			<section class="card">
+				<h2>People in the chat</h2>
+				<p class="muted">Everyone on the chat's list: online now, or recently active (kept for 2 hours). Removing someone takes them off everyone's list, disconnects them and frees their name. They can rejoin by reloading the page.</p>
+				{% if people %}
+				<table>
+					<tr><th>Name</th><th>Gender</th><th>Status</th><th>Tabs</th><th>Waiting msgs</th><th></th></tr>
+					{% for p in people %}
+					<tr>
+						<td>{% if p.online %}<span class="dot"></span>{% endif %}{{ p.username }}</td>
+						<td>{{ {"male": "♂ Male", "female": "♀ Female", "transgender": "⚧ Transgender"}.get(p.gender, "–") }}</td>
+						<td>{% if p.online %}<span class="good">online</span>{% else %}last seen {{ when(p.last_seen) }}{% endif %}</td>
+						<td>{{ p.connections }}</td>
+						<td>{{ p.pending }}</td>
+						<td>
+							<form method="post" class="inline">
+								<input type="hidden" name="csrf" value="{{ csrf }}" />
+								<input type="hidden" name="person_id" value="{{ p.id }}" />
+								<button class="danger" name="action" value="remove_person">Remove</button>
+							</form>
+						</td>
+					</tr>
+					{% endfor %}
+				</table>
+				{% else %}<p class="muted">Nobody is in the chat right now.</p>{% endif %}
+			</section>
+
 			<section class="grid3">
 				{% for title, rows in [("Browsers · 7d", data.top_browsers), ("Operating systems · 7d", data.top_os), ("Devices · 7d", data.top_devices)] %}
 				<div class="card">
