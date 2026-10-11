@@ -963,8 +963,15 @@ svg {
 /* message hidden by the sender's "Verified only" mode */
 .hidden-msg {
 	position: relative;
-	min-width: 220px;
-	padding: 2px 0;
+	min-width: 230px;
+	min-height: 92px;
+	padding: 8px 0;
+	display: flex;
+	align-items: center;
+}
+
+.hidden-msg .fake {
+	flex: 1;
 }
 
 .hidden-msg .fake {
@@ -998,6 +1005,7 @@ svg {
 .hidden-msg .veil {
 	position: absolute;
 	inset: 0;
+	padding: 4px 8px;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
