@@ -43,6 +43,14 @@ DECOY_PATHS = {
 }
 
 
+def startup_report():
+    """One log line so the owner can check the setup in Render's logs (never prints secrets)."""
+    source = "ADMIN_PASSWORD" if _setting("ADMIN_PASSWORD") else "ADMIN_PASSWORD_HASH" if ADMIN_PASSWORD_HASH else "none"
+    state = "ENABLED" if enabled() else "DISABLED"
+    print(f"[admin] dashboard {state} | ADMIN_PATH length={len(ADMIN_PATH)} (needs >= 16) | "
+          f"password from {source} | ADMIN_PATH starts with {ADMIN_PATH[:4]!r}", flush=True)
+
+
 def enabled():
     return len(ADMIN_PATH) >= 16 and bool(ADMIN_PASSWORD_HASH)
 
@@ -63,6 +71,8 @@ def init_admin(app, client_ip, online_users, roster=lambda: [], remove_person=la
     client_ip() -> the visitor's IP; online_users() -> list of live connection dicts;
     roster() -> everyone in the chat (online + recently active); remove_person(id).
     """
+
+    startup_report()
 
     def strike(kind):
         # Never store the secret path itself, even in the private database.
