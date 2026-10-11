@@ -16,7 +16,7 @@ from playwright.async_api import async_playwright
 
 BASE = os.environ.get("BASE_URL", "http://localhost:5000/")
 SHOTS = sys.argv[sys.argv.index("--screenshots") + 1] if "--screenshots" in sys.argv else None
-SECRETS = ["first secret 🍕", "sent while bob was away", "after refresh"]
+SECRETS = ["first secret 🍕", "sent while bob was away", "after refresh", "only for verified eyes"]
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
@@ -178,6 +178,21 @@ async def main():
         await shows(dave, SECRETS[2])
         check(True, "newcomer sees past messages")
         await d_ctx.close()
+
+        # Verified only: Alice has verified Bob, not Carol
+        await alice.click(".switch-row")
+        await alice.wait_for_function("() => document.getElementById('e2ee-pill').innerText.includes('Verified only')")
+        await say(alice, SECRETS[3])
+        await shows(bob, SECRETS[3])
+        await carol.wait_for_function(
+            "() => document.getElementById('messages').innerText.includes('shares only with people they')")
+        check(SECRETS[3] not in await text_of(carol), "verified only: unverified person gets a blurred placeholder")
+        if SHOTS:
+            await carol.screenshot(path=f"{SHOTS}/6-hidden-placeholder.png")
+            await alice.screenshot(path=f"{SHOTS}/7-verified-only-sender.png")
+        await alice.wait_for_selector(".vo-badge")
+        check((await alice.inner_text(".vo-badge")).startswith("1/"), "sender sees who can read it")
+        await alice.click(".switch-row")  # back to normal for the rest of the run
 
         # Typing indicator
         await carol.fill("#message-input", "typing something")

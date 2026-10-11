@@ -8,6 +8,7 @@ download it. The key travels inside the end-to-end encrypted message.
 """
 import base64
 import binascii
+import functools
 import hashlib
 import logging
 import os
@@ -18,7 +19,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, abort, jsonify, render_template, request, send_file
+from flask import Flask, abort, jsonify, render_template, request, send_file, url_for
 from flask_socketio import ConnectionRefusedError, SocketIO, emit
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -89,7 +90,7 @@ files_lock = threading.Lock()
 def set_security_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' https://cdnjs.cloudflare.com; "
+        "script-src 'self'; "
         "style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; "
         "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )
@@ -101,7 +102,22 @@ def set_security_headers(response):
     response.headers["Permissions-Policy"] = "camera=(self), microphone=(), geolocation=()"
     if request.is_secure:
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    if request.path.startswith("/static/") and request.args.get("v") and response.status_code == 200:
+        # Versioned asset URLs change whenever the file changes, so browsers may keep them for a year.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
+
+
+@functools.lru_cache(maxsize=None)
+def _asset_version(filename):
+    with open(os.path.join(app.static_folder, filename), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:12]
+
+
+@app.template_global()
+def asset(filename):
+    """URL for a static file with a content hash, e.g. /static/js/chat.js?v=3f2a9c1b0d4e."""
+    return url_for("static", filename=filename, v=_asset_version(filename))
 
 
 def client_ip():
@@ -489,6 +505,17 @@ def handle_typing():
         conn["last_typing"] = time.monotonic()
         ident_id = conn["identity"]["id"]
     emit("typing", {"id": ident_id}, broadcast=True, include_self=False)
+
+
+@socketio.on("history_received")
+def handle_history_received():
+    """A newcomer got the shared history: tell the other members to cancel their backup shares."""
+    with users_lock:
+        conn = users.get(request.sid)
+        if not conn or not take_token(conn):
+            return
+        ident_id = conn["identity"]["id"]
+    emit("history_received", {"id": ident_id}, broadcast=True, include_self=False)
 
 
 @socketio.on("file_upload_token")

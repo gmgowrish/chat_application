@@ -231,3 +231,19 @@ body.panel {
 .panel a.toggle:hover {
 	border-color: var(--panel-accent);
 }
+
+.panel .loc {
+	display: block;
+	font-size: 11.5px;
+	color: var(--panel-accent);
+	text-decoration: none;
+	white-space: nowrap;
+}
+
+.panel .loc:hover {
+	text-decoration: underline;
+}
+
+.panel span.loc {
+	color: var(--panel-muted);
+}

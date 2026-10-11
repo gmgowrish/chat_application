@@ -125,9 +125,12 @@ def init_admin(app, client_ip, online_users, roster=lambda: [], remove_person=la
             return handle_post()
         if not is_logged_in():
             return not_found_page()
+        data = analytics.dashboard_data(include_bots=request.args.get("bots") == "1")
+        online = online_users()
+        ips = [u["ip"] for u in online] + [
+            row["ip"] for key in ("recent_sessions", "recent_visits", "security") for row in data[key]]
         response = app.make_response(render_template(
-            "admin.html", data=analytics.dashboard_data(include_bots=request.args.get("bots") == "1"),
-            online=online_users(), people=roster(),
+            "admin.html", data=data, online=online, people=roster(), locs=analytics.locations(ips),
             csrf=session["csrf"], now=datetime.now(timezone.utc),
         ))
         return no_store(response)

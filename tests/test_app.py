@@ -285,8 +285,27 @@ def test_security_headers():
     response = app.test_client().get("/")
     assert response.status_code == 200
     csp = response.headers["Content-Security-Policy"]
-    assert "script-src 'self' https://cdnjs.cloudflare.com" in csp
+    assert "script-src 'self';" in csp  # no third-party scripts at all
     assert "'unsafe-inline'" not in csp
     assert "img-src 'self' blob: data:" in csp
     assert response.headers["Permissions-Policy"].startswith("camera=(self)")
     assert response.headers["X-Frame-Options"] == "DENY"
+
+
+def test_static_assets_are_versioned_and_cached_long():
+    client = app.test_client()
+    page = client.get("/").get_data(as_text=True)
+    import re
+    url = re.search(r'src="(/static/js/chat\.js\?v=[0-9a-f]{12})"', page).group(1)
+    assert "cdnjs" not in page and "/static/js/socket.io.min.js?v=" in page
+    assert client.get(url).headers["Cache-Control"] == "public, max-age=31536000, immutable"
+    assert "immutable" not in client.get("/static/js/chat.js").headers.get("Cache-Control", "")
+
+
+def test_history_received_tells_backup_sharers_to_stand_down():
+    alice, bob = connect(1, name="Alice"), connect(2, name="Bob")
+    welcome(alice)
+    bob_id = welcome(bob)["me"]["id"]
+    alice.get_received()
+    bob.emit("history_received")
+    assert events(alice, "history_received") == [{"id": bob_id}]

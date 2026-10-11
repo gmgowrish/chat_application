@@ -6,9 +6,13 @@ end-to-end encrypted and never reaches the server, so it cannot be logged.
 Storage: PostgreSQL when DATABASE_URL is set (recommended on Render, whose disk
 is wiped on every restart), otherwise SQLite in DATA_DIR.
 """
+import ipaddress
+import json
 import os
 import re
+import threading
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
@@ -60,6 +64,14 @@ security_events = Table(
     Column("kind", String(40)),
     Column("path", String(200)),
     Column("user_agent", String(400)),
+)
+
+ip_locations = Table(
+    "ip_locations", metadata,
+    Column("ip", String(64), primary_key=True),
+    Column("label", String(120)),
+    Column("loc", String(40)),
+    Column("fetched_at", DateTime(timezone=True), index=True),
 )
 
 admin_state = Table(
@@ -198,6 +210,70 @@ def purge_old_rows(force=False):
         conn.execute(delete(visits).where(visits.c.ts < cutoff))
         conn.execute(delete(chat_sessions).where(chat_sessions.c.connected_at < cutoff))
         conn.execute(delete(security_events).where(security_events.c.ts < cutoff))
+        conn.execute(delete(ip_locations).where(ip_locations.c.fetched_at < cutoff))
+
+
+# ---------------------------------------------------------------- approximate IP location
+#
+# City-level only: an IP address cannot locate a device precisely. Lookups run in a
+# background thread for the IPs shown on the admin page, via ipinfo.io (set
+# IPINFO_TOKEN for higher limits), and are cached in the database for 30 days.
+
+_lookups_in_flight = set()
+_lookup_lock = threading.Lock()
+
+
+def _is_private(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+
+
+def _lookup(ip):
+    if _is_private(ip):
+        return "Local network", ""
+    token = os.environ.get("IPINFO_TOKEN", "").strip()
+    url = f"https://ipinfo.io/{ip}/json" + (f"?token={token}" if token else "")
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "python-chat"})
+    with urllib.request.urlopen(request, timeout=4) as response:  # noqa: S310 - fixed https URL
+        data = json.loads(response.read(20_000))
+    if data.get("bogon"):
+        return "Local network", ""
+    parts = [data.get("city"), data.get("region"), data.get("country")]
+    label = ", ".join(p for p in parts if p) or "Unknown"
+    return label[:120], (data.get("loc") or "")[:40]
+
+
+def _lookup_batch(ips):
+    for ip in ips:
+        try:
+            label, loc = _lookup(ip)
+        except Exception:
+            label, loc = None, None
+        if label is not None:
+            with engine.begin() as conn:
+                conn.execute(delete(ip_locations).where(ip_locations.c.ip == ip))
+                conn.execute(insert(ip_locations).values(ip=ip, label=label, loc=loc, fetched_at=now()))
+        with _lookup_lock:
+            _lookups_in_flight.discard(ip)
+
+
+def locations(ips, max_new=15):
+    """Cached {ip: {"label", "loc"}}; unknown IPs are looked up in the background."""
+    ips = {ip for ip in ips if ip}
+    if not ips:
+        return {}
+    with engine.connect() as conn:
+        rows = conn.execute(select(ip_locations).where(ip_locations.c.ip.in_(ips))).fetchall()
+    found = {r.ip: {"label": r.label, "loc": r.loc} for r in rows}
+    with _lookup_lock:
+        missing = [ip for ip in ips if ip not in found and ip not in _lookups_in_flight][:max_new]
+        _lookups_in_flight.update(missing)
+    if missing:
+        threading.Thread(target=_lookup_batch, args=(missing,), daemon=True).start()
+    return found
 
 
 # ---------------------------------------------------------------- dashboard reads

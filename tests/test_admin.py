@@ -15,7 +15,8 @@ PASSWORD = "correct horse battery staple"
 @pytest.fixture(autouse=True)
 def clean_db():
     with analytics.engine.begin() as conn:
-        for table in (analytics.visits, analytics.chat_sessions, analytics.security_events, analytics.admin_state):
+        for table in (analytics.visits, analytics.chat_sessions, analytics.security_events, analytics.admin_state,
+                      analytics.ip_locations):
             conn.execute(delete(table))
     server.users.clear()
     server.identities.clear()
@@ -197,3 +198,30 @@ def test_bots_are_hidden_by_default(client):
     assert "Show bots (1 hidden this week)" in page and "Go-http-client" not in page
     page = client.get(ADMIN + "?bots=1").get_data(as_text=True)
     assert "Hide bots" in page and "Go-http-client" in page
+
+
+def test_ip_locations_are_city_level_cached_and_shown(client, monkeypatch):
+    calls = []
+
+    def fake_lookup(ip):
+        calls.append(ip)
+        return "Chennai, Tamil Nadu, IN", "13.0878,80.2785"
+
+    monkeypatch.setattr(analytics, "_lookup", fake_lookup)
+    monkeypatch.setattr(analytics.threading, "Thread",
+                        lambda target, args, daemon: type("T", (), {"start": lambda self: target(*args)})())
+    assert analytics.locations(["49.204.1.1"]) == {}           # first time: looked up in the background
+    assert analytics.locations(["49.204.1.1"]) == {"49.204.1.1": {"label": "Chennai, Tamil Nadu, IN",
+                                                                  "loc": "13.0878,80.2785"}}
+    assert calls == ["49.204.1.1"]                              # cached afterwards
+
+    client.get("/", headers={"User-Agent": "Mozilla/5.0 Chrome/141.0", "X-Forwarded-For": "x"},
+               environ_base={"REMOTE_ADDR": "49.204.1.1"})
+    login(client)
+    page = client.get(ADMIN).get_data(as_text=True)
+    assert "📍 Chennai, Tamil Nadu, IN" in page and "openstreetmap.org/?mlat=13.0878" in page
+
+
+def test_private_addresses_are_not_sent_anywhere():
+    assert analytics._lookup("127.0.0.1") == ("Local network", "")
+    assert analytics._lookup("10.30.173.133") == ("Local network", "")

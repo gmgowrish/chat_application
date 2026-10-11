@@ -130,11 +130,14 @@ function toast(message, type = "info") {
 
 function openKeyStore() {
 	return new Promise((resolve, reject) => {
-		const request = indexedDB.open("python-chat", 2);
+		const request = indexedDB.open("python-chat", 3);
 		request.onupgradeneeded = () => {
 			const db = request.result;
 			if (!db.objectStoreNames.contains("keys")) db.createObjectStore("keys");
-			if (!db.objectStoreNames.contains("messages")) db.createObjectStore("messages", { keyPath: "key" });
+			const messages = db.objectStoreNames.contains("messages")
+				? request.transaction.objectStore("messages")
+				: db.createObjectStore("messages", { keyPath: "key" });
+			if (!messages.indexNames.contains("ts")) messages.createIndex("ts", "ts");
 		};
 		request.onsuccess = () => resolve(request.result);
 		request.onerror = () => reject(request.error);
@@ -245,6 +248,18 @@ async function main() {
 
 	// ---------------- trust: pins (name -> key) and verified keys
 
+	let verifiedOnly = store.get("verifiedOnly", false);
+	const voToggle = $("verified-only");
+	voToggle.checked = verifiedOnly;
+	voToggle.addEventListener("change", () => {
+		verifiedOnly = voToggle.checked;
+		store.set("verifiedOnly", verifiedOnly);
+		setOnline(Boolean(socket?.connected));
+		toast(verifiedOnly
+			? "Verified only is on: new messages are readable only by people you've verified."
+			: "Verified only is off: everyone here can read your new messages.");
+	});
+
 	const pins = store.get("pins", {});
 	const verified = store.get("verified", {});
 	const savePins = () => store.set("pins", pins);
@@ -278,11 +293,28 @@ async function main() {
 		});
 	}
 
-	async function historyTrim() {
-		const all = await historyAll();
-		if (all.length <= HISTORY_MAX) return;
-		const tx = historyDb.transaction("messages", "readwrite");
-		all.slice(0, all.length - HISTORY_MAX).forEach((r) => tx.objectStore("messages").delete(r.key));
+	let trimTimer = null;
+	function historyTrim() {
+		// Debounced: one cheap pass at most every 2 s, deleting only the oldest extras.
+		if (!historyDb || trimTimer) return;
+		trimTimer = setTimeout(() => {
+			trimTimer = null;
+			try {
+				const store = historyDb.transaction("messages", "readwrite").objectStore("messages");
+				store.count().onsuccess = (event) => {
+					let extra = event.target.result - HISTORY_MAX;
+					if (extra <= 0) return;
+					store.index("ts").openCursor().onsuccess = (e) => {
+						const cursor = e.target.result;
+						if (!cursor || extra-- <= 0) return;
+						cursor.delete();
+						cursor.continue();
+					};
+				};
+			} catch {
+				/* ignore */
+			}
+		}, 2000);
 	}
 
 	function remember({ id, from, ts, text, file, out }) {
@@ -296,8 +328,8 @@ async function main() {
 		if (historyLoaded) return;
 		historyLoaded = true;
 		for (const r of await historyAll()) {
-			seen.add(r.key);
-			addMessage({ from: r.from, ts: r.ts, text: r.text, file: r.file, outgoing: r.out, author: { username: r.name, gender: r.gender }, history: true });
+			markSeen(r.key);
+			addMessage({ from: r.from, ts: r.ts, text: r.text, file: r.file, outgoing: r.out, author: { username: r.name, gender: r.gender }, history: true, hidden: r.hidden });
 		}
 	}
 
@@ -404,7 +436,17 @@ async function main() {
 		return li;
 	}
 
+	let peopleFrame = 0;
 	function renderPeople() {
+		// Many events can arrive in one burst; redraw the sidebar once per frame.
+		if (peopleFrame) return;
+		peopleFrame = requestAnimationFrame(() => {
+			peopleFrame = 0;
+			drawPeople();
+		});
+	}
+
+	function drawPeople() {
 		const everyone = [...roster.values()].sort((a, b) => a.username.localeCompare(b.username));
 		const online = everyone.filter((p) => p.online);
 		const away = everyone.filter((p) => !p.online).sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0));
@@ -447,6 +489,18 @@ async function main() {
 		ui.empty.hidden = true;
 	}
 
+	const MAX_RENDERED = 500;
+	function capRendered() {
+		// Long sessions: keep only the newest messages on screen (history keeps 300 anyway).
+		const rows = ui.messages.querySelectorAll(":scope > .msg, :scope > .system");
+		for (let i = 0; i < rows.length - MAX_RENDERED; i++) rows[i].remove();
+	}
+
+	function markSeen(key) {
+		seen.add(key);
+		if (seen.size > 5000) seen.delete(seen.values().next().value);
+	}
+
 	function scrollToEnd() {
 		ui.messages.scrollTop = ui.messages.scrollHeight;
 	}
@@ -460,7 +514,21 @@ async function main() {
 		scrollToEnd();
 	}
 
-	function addMessage({ from, ts, text, file, outgoing: isOut, localUrl, author, into, history }) {
+	function hiddenPlaceholder(sender, from) {
+		const box = el("div", "hidden-msg");
+		const fake = el("div", "fake");
+		fake.append(el("i"), el("i"), el("i"));
+		const veil = el("div", "veil");
+		veil.append(el("span", "", `🔒 ${sender.username} shares only with people they've verified`));
+		const button = el("button", "", "Verify together");
+		button.type = "button";
+		button.addEventListener("click", () => openVerify(from));
+		veil.append(button);
+		box.append(fake, veil);
+		return box;
+	}
+
+	function addMessage({ from, ts, text, file, outgoing: isOut, localUrl, author, into, history, hidden }) {
 		hideEmpty();
 		const sender = (isOut ? me : null) || author || roster.get(from) || { username: "Unknown", gender: "unspecified" };
 		const grouped = lastRendered && lastRendered.from === from && ts - lastRendered.ts < GROUP_WINDOW_MS;
@@ -469,6 +537,7 @@ async function main() {
 		const row = el("div", `msg${isOut ? " out" : ""}${grouped ? " grouped" : ""}`);
 		const bubble = el("div", "bubble");
 		bubble.append(el("div", "author", sender.username));
+		if (hidden) bubble.append(hiddenPlaceholder(sender, from));
 		if (file) bubble.append(renderAttachment(file, localUrl));
 		if (text) bubble.append(el("div", "text", text));
 		const meta = el("div", "meta");
@@ -478,6 +547,7 @@ async function main() {
 		bubble.append(meta);
 		row.append(avatar(sender, "sm"), bubble);
 		(into || ui.messages).append(row);
+		if (!into) capRendered();
 		scrollToEnd();
 		return { row, bubble, ticks };
 	}
@@ -492,6 +562,12 @@ async function main() {
 		}
 		ticks.textContent = "✓";
 		ticks.title = "Sent. Waiting for their device to receive it";
+		if (result.readers !== undefined) {
+			const badge = el("span", "vo-badge");
+			badge.append(svgIcon("shield-check"), document.createTextNode(`${result.readers}/${result.total}`));
+			badge.title = `Verified only: readable by ${result.readers} of ${result.total} people`;
+			ticks.before(badge);
+		}
 		awaitingReceipt.set(result.msg_id, { ticks, readers: new Set(), total: result.recipients });
 		for (const by of earlyReceipts.get(result.msg_id) || []) markDelivered({ mid: result.msg_id, by });
 		earlyReceipts.delete(result.msg_id);
@@ -639,8 +715,14 @@ async function main() {
 			const id = `${from}:${message.id}`;
 			if (typeof message.id !== "string" || seen.has(id)) return; // replayed
 			if (typeof message.ts !== "number" || Math.abs(Date.now() - message.ts) > MAX_MESSAGE_AGE_MS) return;
-			seen.add(id);
+			markSeen(id);
 			if (message.type === "history") return showSharedHistory(sender, validFile(message.file));
+			if (message.type === "hidden") {
+				typingUntil.delete(from);
+				addMessage({ from, ts: message.ts, outgoing: false, hidden: true });
+				historyPut({ key: id, id: message.id, from, name: sender.username, gender: sender.gender, ts: message.ts, text: "", file: null, out: false, hidden: true });
+				return renderPeople();
+			}
 			const text = typeof message.text === "string" ? message.text.slice(0, MAX_MESSAGE_LENGTH) : "";
 			const file = validFile(message.file);
 			if (!text && !file) return;
@@ -655,16 +737,28 @@ async function main() {
 
 	// ---------------- past messages for newcomers
 	//
-	// The server can't read history, so when someone new joins, one online member's
-	// browser (the one with the smallest id, so only one does it) encrypts the last
-	// messages it has into a bundle for them. It is shown as "shared by <name>".
+	// The server can't read history, so when someone new joins, an online member's
+	// browser encrypts the last messages it has into a bundle for them, shown as
+	// "shared by <name>". Members are ranked by id: the first shares at once, the next
+	// two act as backups after 3 s / 6 s (in case the first is asleep), and everyone
+	// cancels as soon as the newcomer reports that it received a bundle.
 
-	async function shareHistoryWith(person) {
-		if (!person?.public_key || !me) return;
+	const pendingShares = new Map(); // newcomer id -> timer
+
+	function shareHistoryWith(person) {
+		if (!person?.public_key || !me || verifiedOnly) return; // a newcomer is never verified yet
 		const online = [me, ...[...roster.values()].filter((p) => p.online && p.id !== person.id)];
 		online.sort((a, b) => (a.id < b.id ? -1 : 1));
-		if (online[0].id !== me.id) return;
-		const items = (await historyAll()).slice(-SHARE_MAX).map((r) => ({
+		const rank = online.findIndex((p) => p.id === me.id);
+		if (rank < 0 || rank > 2) return;
+		pendingShares.set(person.id, setTimeout(() => {
+			pendingShares.delete(person.id);
+			sendHistory(person);
+		}, rank * 3000));
+	}
+
+	async function sendHistory(person) {
+		const items = (await historyAll()).filter((r) => !r.hidden).slice(-SHARE_MAX).map((r) => ({
 			id: r.id, from: r.from, name: r.name, gender: r.gender, ts: r.ts, text: r.text, file: r.file,
 		}));
 		if (!items.length) return;
@@ -690,6 +784,7 @@ async function main() {
 			return;
 		}
 		if (!Array.isArray(items)) return;
+		socket?.emit("history_received"); // stop the backup senders
 		const fresh = items.filter((it) =>
 			it && typeof it.id === "string" && it.id.length <= 40 && typeof it.from === "string" && typeof it.ts === "number" &&
 			typeof it.name === "string" && (typeof it.text === "string" || it.file) && !seen.has(`${it.from}:${it.id}`) && it.from !== me.id
@@ -703,7 +798,7 @@ async function main() {
 		lastRendered = null;
 		for (const it of fresh) {
 			const key = `${it.from}:${it.id}`;
-			seen.add(key);
+			markSeen(key);
 			const author = { username: it.name.slice(0, 24), gender: GENDER_SYMBOL[it.gender] !== undefined ? it.gender : "unspecified" };
 			const text = typeof it.text === "string" ? it.text.slice(0, MAX_MESSAGE_LENGTH) : "";
 			const itemFile = validFile(it.file);
@@ -739,12 +834,28 @@ async function main() {
 		return envelopes;
 	}
 
-	async function deliver(payload, msgId = randomToken(12), people = undefined) {
-		const envelopes = await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: msgId })), people);
+	async function sendEnvelopes(envelopes, msgId) {
 		if (!Object.keys(envelopes).length) return { ok: false, error: "Nobody else is here yet" };
 		const result = await socket.timeout(15000).emitWithAck("send_message", { msg_id: msgId, envelopes })
 			.catch(() => ({ ok: false, error: "Timed out" }));
 		return { ...result, msg_id: msgId };
+	}
+
+	async function deliver(payload, msgId = randomToken(12), people = undefined) {
+		return sendEnvelopes(await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: msgId })), people), msgId);
+	}
+
+	// "Verified only": the real message is encrypted only for people I've verified.
+	// Everyone else gets an encrypted placeholder; they never receive the content or file key.
+	async function deliverToRoom(payload, msgId) {
+		if (!verifiedOnly) return deliver(payload, msgId);
+		const everyone = [...roster.values()].filter((p) => p.public_key);
+		const readers = everyone.filter((p) => trustState(p) === "verified");
+		const others = everyone.filter((p) => trustState(p) !== "verified");
+		const real = await encryptFor(encoder.encode(JSON.stringify({ ...payload, id: msgId })), readers);
+		const hidden = await encryptFor(encoder.encode(JSON.stringify({ type: "hidden", ts: payload.ts, id: msgId })), others);
+		const result = await sendEnvelopes({ ...real, ...hidden }, msgId);
+		return { ...result, readers: readers.length, total: everyone.length };
 	}
 
 	function sendText(text) {
@@ -756,7 +867,7 @@ async function main() {
 		const id = randomToken(12);
 		const { ticks } = addMessage({ from: me.id, ts, text, outgoing: true });
 		remember({ id, from: me.id, ts, text, out: true });
-		outgoing = outgoing.then(async () => setTicks(ticks, await deliver({ text, ts }, id)));
+		outgoing = outgoing.then(async () => setTicks(ticks, await deliverToRoom({ text, ts }, id)));
 		return true;
 	}
 
@@ -804,7 +915,7 @@ async function main() {
 				const sentFile = { ...meta, id, key: rawKey, iv: toBase64(iv) };
 				const msgId = randomToken(12);
 				remember({ id: msgId, from: me.id, ts, file: sentFile, out: true });
-				const result = await deliver({ ts, file: sentFile }, msgId);
+				const result = await deliverToRoom({ ts, file: sentFile }, msgId);
 				bar.remove();
 				setTicks(ticks, result);
 				if (!localUrl || !(SAFE_IMAGES.includes(type) || SAFE_VIDEOS.includes(type))) {
@@ -1056,6 +1167,7 @@ async function main() {
 		canvas.getContext("2d").drawImage(video, 0, 0);
 		canvas.toBlob((blob) => {
 			capturedBlob = blob;
+			if ($("camera-preview").src.startsWith("blob:")) URL.revokeObjectURL($("camera-preview").src);
 			$("camera-preview").src = URL.createObjectURL(blob);
 			$("camera-video").hidden = true;
 			$("camera-preview").hidden = false;
@@ -1100,7 +1212,8 @@ async function main() {
 
 	function setOnline(online) {
 		ui.pill.classList.toggle("offline", !online);
-		ui.pill.lastChild.textContent = online ? "Encrypted" : "Offline";
+		ui.pill.classList.toggle("vo", online && verifiedOnly);
+		ui.pill.lastChild.textContent = !online ? "Offline" : verifiedOnly ? "Verified only" : "Encrypted";
 		ui.input.disabled = !online;
 		ui.attach.disabled = !online;
 		ui.send.disabled = !online || !ui.input.value.trim();
@@ -1157,6 +1270,11 @@ async function main() {
 			addSystem(`${person.username} joined`);
 			renderPeople();
 			shareHistoryWith(person);
+		});
+
+		socket.on("history_received", ({ id }) => {
+			clearTimeout(pendingShares.get(id));
+			pendingShares.delete(id);
 		});
 
 		socket.on("user_removed", ({ id }) => {

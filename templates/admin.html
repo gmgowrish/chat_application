@@ -6,9 +6,20 @@
 		<meta name="robots" content="noindex, nofollow" />
 		<meta http-equiv="refresh" content="30" />
 		<title>Panel</title>
-		<link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}" />
+		<link rel="stylesheet" href="{{ asset('css/base.css') }}" />
 	</head>
 	<body class="panel">
+		{% macro ipcell(ip) -%}
+			{{ ip }}
+			{%- set l = locs.get(ip) %}
+			{%- if l and l.loc %}
+			<a class="loc" href="https://www.openstreetmap.org/?mlat={{ l.loc.split(',')[0] }}&amp;mlon={{ l.loc.split(',')[1] }}#map=11/{{ l.loc.split(',')[0] }}/{{ l.loc.split(',')[1] }}" target="_blank" rel="noopener noreferrer" title="Approximate, city level only (IP addresses can't pinpoint a device)">📍 {{ l.label }}</a>
+			{%- elif l %}
+			<span class="loc muted">{{ l.label }}</span>
+			{%- elif ip %}
+			<span class="loc muted">locating…</span>
+			{%- endif %}
+		{%- endmacro %}
 		{% macro when(ts) -%}
 			{%- if ts %}{{ ts.strftime('%Y-%m-%d %H:%M:%S') }}{% else %}–{% endif -%}
 		{%- endmacro %}
@@ -46,7 +57,7 @@
 					{% for u in online %}
 					<tr>
 						<td><span class="dot"></span>{{ u.username }}</td>
-						<td>{{ u.ip }}</td>
+						<td>{{ ipcell(u.ip) }}</td>
 						<td>{{ u.browser }}</td>
 						<td>{{ u.os }}</td>
 						<td>{{ u.device }}</td>
@@ -104,7 +115,7 @@
 					<tr><th>Username</th><th>IP</th><th>Browser</th><th>OS</th><th>Device</th><th>Connected (UTC)</th><th>Left (UTC)</th><th>Messages</th><th>Recipients</th><th>Renames</th></tr>
 					{% for s in data.recent_sessions %}
 					<tr>
-						<td>{{ s.username }}</td><td>{{ s.ip }}</td><td>{{ s.browser }}</td><td>{{ s.os }}</td><td>{{ s.device }}</td>
+						<td>{{ s.username }}</td><td>{{ ipcell(s.ip) }}</td><td>{{ s.browser }}</td><td>{{ s.os }}</td><td>{{ s.device }}</td>
 						<td>{{ when(s.connected_at) }}</td>
 						<td>{% if s.disconnected_at %}{{ when(s.disconnected_at) }}{% else %}<span class="good">online / unknown</span>{% endif %}</td>
 						<td>{{ s.messages_sent }}</td><td>{{ s.recipients_total }}</td><td>{{ s.username_changes }}</td>
@@ -119,7 +130,7 @@
 					<tr><th>Time (UTC)</th><th>IP</th><th>Browser</th><th>OS</th><th>Device</th><th>Language</th><th>Referrer</th><th>Proxy chain</th><th>User agent</th></tr>
 					{% for v in data.recent_visits %}
 					<tr>
-						<td>{{ when(v.ts) }}</td><td>{{ v.ip }}</td><td>{{ v.browser }}</td><td>{{ v.os }}</td><td>{{ v.device }}</td>
+						<td>{{ when(v.ts) }}</td><td>{{ ipcell(v.ip) }}</td><td>{{ v.browser }}</td><td>{{ v.os }}</td><td>{{ v.device }}</td>
 						<td>{{ v.language }}</td><td>{{ v.referrer or "–" }}</td><td>{{ v.forwarded_for or "–" }}</td>
 						<td class="ua">{{ v.user_agent }}</td>
 					</tr>
@@ -136,7 +147,7 @@
 					<tr>
 						<td>{{ when(e.ts) }}</td>
 						<td class="{{ 'good' if e.kind == 'admin_login_ok' else 'bad' }}">{{ e.kind }}</td>
-						<td>{{ e.ip }}</td><td>{{ e.path }}</td><td class="ua">{{ e.user_agent }}</td>
+						<td>{{ ipcell(e.ip) }}</td><td>{{ e.path }}</td><td class="ua">{{ e.user_agent }}</td>
 					</tr>
 					{% else %}<tr><td class="muted">No security events</td></tr>{% endfor %}
 				</table>

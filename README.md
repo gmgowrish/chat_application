@@ -18,12 +18,15 @@
 
 - 🔒 **End-to-end encryption**: messages, photos and files are encrypted in the browser with the Web Crypto API; the server cannot read them
 - 🙂 **Emoji verification** (like Telegram calls): tap someone and compare 8 emoji, or the 60-digit safety number. Verified people get a green shield, and you're warned if their key ever changes
+- 🛡️ **Verified only** (optional switch): your messages are encrypted only for people you've verified; everyone else gets a blurred placeholder and never receives the content or key
+- 💬 **Newcomers see recent messages**: an online member's browser shares the last 100 messages with them, encrypted just for them; your own history stays on your device across refreshes
 - 👤 **Stable identity**: your name, gender and encryption key are remembered on your device. Refreshing or switching the screen off doesn't create a "new" person, and nobody sees left/joined spam
 - 📬 **Never miss a message**: messages sent while your screen is off wait on the server (still encrypted) for up to an hour
 - 📷 **Encrypted photos and files**: take a photo with the camera, upload photos, videos or any file (up to 15 MB), drag and drop or paste; recipients save them to their device. Files are deleted from the server after 1 hour
 - 🟢 **Presence**: who's online, "recently active" with last seen, typing indicators, ✓ sent / ✓✓ delivered
 - ♂ ♀ ⚧ **Gender-themed avatars**, light and dark mode, mobile drawer layout
-- 🧱 **Hardened server**: strict Content-Security-Policy, rate limiting, input validation, same-origin WebSockets
+- 🧱 **Hardened server**: strict Content-Security-Policy (`script-src 'self'`, no third-party scripts), rate limiting, input validation, same-origin WebSockets
+- ⚡ **Fast**: content-hashed static files cached for a year, ~1–3 ms server responses, ~30 ms message delivery locally
 
 ---
 
@@ -164,9 +167,9 @@ chat_application/
 
 ## 🛠️ Tech Stack
 
-**Python** · **Flask** · **Flask-SocketIO** · **Socket.IO (JS client)** · **Web Crypto API** · **SQLAlchemy** · **Gunicorn**
+**Python** · **Flask** · **Flask-SocketIO** · **Socket.IO (JS client, self-hosted)** · **Web Crypto API** · **IndexedDB** · **SQLAlchemy** · **Gunicorn**
 
-> Online users are kept in memory and messages are never stored. The server keeps connection metadata (IP, browser, times, message counts) for 30 days for security and abuse prevention; the chat page says so.
+> The server never stores readable messages: only ciphertext waiting for delivery (up to 1 hour) and encrypted files (1 hour). It keeps connection metadata (IP with approximate city, browser, times, message counts) for 30 days for security and abuse prevention; the chat page says so.
 
 ---
 

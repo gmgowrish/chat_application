@@ -5,15 +5,10 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<meta name="theme-color" content="#6366f1" />
 		<title>Secure Python Chat</title>
-		<link rel="icon" href="{{ url_for('static', filename='img/icon.svg') }}" type="image/svg+xml" />
-		<link rel="stylesheet" href="{{ url_for('static', filename='css/chat.css') }}" />
-		<script
-			src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.8.4/socket.io.min.js"
-			integrity="sha512-xRBIxEU1o+/TCVhv/EL1y/xAdUVdvVQJSXO0zafimQ/Qm6acv4wlfZxqpoXZLO6pa2dROhAEJAXXdI+FAFgnKA=="
-			crossorigin="anonymous"
-			referrerpolicy="no-referrer"
-		></script>
-		<script src="{{ url_for('static', filename='js/chat.js') }}" defer></script>
+		<link rel="icon" href="{{ asset('img/icon.svg') }}" type="image/svg+xml" />
+		<link rel="stylesheet" href="{{ asset('css/chat.css') }}" />
+		<script src="{{ asset('js/socket.io.min.js') }}" defer></script>
+		<script src="{{ asset('js/chat.js') }}" defer></script>
 	</head>
 	<body>
 		<svg width="0" height="0" class="sprite" aria-hidden="true">
@@ -69,6 +64,14 @@
 				</div>
 
 				<div class="sidebar-foot">
+					<label class="switch-row" for="verified-only">
+						<span class="switch-text">
+							<span class="switch-title"><svg><use href="#i-shield-check" /></svg>Verified only</span>
+							<span class="switch-sub">Only people you've verified can read your messages</span>
+						</span>
+						<input type="checkbox" id="verified-only" role="switch" />
+						<span class="switch" aria-hidden="true"></span>
+					</label>
 					<button class="link-btn" id="info-button"><svg><use href="#i-info" /></svg>How your privacy works</button>
 				</div>
 			</aside>
@@ -220,9 +223,10 @@
 			<ul class="info-list">
 				<li><svg><use href="#i-lock" /></svg><span><strong>End-to-end encrypted.</strong> Messages, photos and files are encrypted in your browser (ECDH P-256 + AES-256-GCM). The server only relays ciphertext.</span></li>
 				<li><svg><use href="#i-shield-check" /></svg><span><strong>Verify people.</strong> Tap someone in the list and compare the emoji. Verified people get a green shield, and you'll be warned if their key ever changes.</span></li>
+				<li><svg><use href="#i-shield" /></svg><span><strong>Verified only (optional).</strong> Turn it on and your messages are encrypted only for people you've verified. Everyone else gets a blurred "hidden" placeholder and never receives the content or its key.</span></li>
 				<li><svg><use href="#i-link" /></svg><span><strong>Newcomers see recent messages.</strong> When someone joins, an online member's browser shares the last 100 messages with them, encrypted just for them. Your own chat is kept on this device, so it survives a refresh.</span></li>
 				<li><svg><use href="#i-file" /></svg><span><strong>Files disappear.</strong> Encrypted files are deleted from the server after one hour.</span></li>
-				<li><svg><use href="#i-info" /></svg><span><strong>What the server keeps.</strong> For security and abuse prevention it logs connection metadata (IP address, browser, times, message counts) for 30 days. Never message content.</span></li>
+				<li><svg><use href="#i-info" /></svg><span><strong>What the server keeps.</strong> For security and abuse prevention it logs connection metadata (IP address with its approximate city, looked up via ipinfo.io; browser; times; message counts) for 30 days. Never message content.</span></li>
 			</ul>
 		</dialog>
 	</body>
