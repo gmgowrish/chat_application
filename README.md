@@ -135,7 +135,7 @@ Keep **one instance**: online users are held in memory.
 | `BEHIND_PROXY=1` | Trust one proxy's `X-Forwarded-*` headers when self-hosting behind nginx/Caddy |
 | `FLASK_DEBUG=1` | Debug mode for `python app.py` (never in production) |
 
-Operator analytics (connection metadata only, never message content) are optional and stay disabled unless configured through private environment variables.
+Operator analytics (connection metadata only, never message content) are optional and stay disabled unless configured through private environment variables (`ADMIN_PATH` plus `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH`).
 
 ---
 

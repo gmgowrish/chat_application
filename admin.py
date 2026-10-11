@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import abort, redirect, render_template, request, session
 from markupsafe import escape
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import analytics
 
@@ -27,7 +27,11 @@ def _setting(name):
 
 
 ADMIN_PATH = _setting("ADMIN_PATH").strip("/")
-ADMIN_PASSWORD_HASH = _setting("ADMIN_PASSWORD_HASH")
+# ADMIN_PASSWORD (plain, hashed here at startup) is easier to paste than a long hash;
+# when both are set, the plain password wins.
+ADMIN_PASSWORD_HASH = (
+    generate_password_hash(_setting("ADMIN_PASSWORD")) if _setting("ADMIN_PASSWORD") else _setting("ADMIN_PASSWORD_HASH")
+)
 ADMIN_ALLOWED_IPS = {ip.strip() for ip in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",") if ip.strip()}
 FUNNY_URL = os.environ.get("FUNNY_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 MAX_STRIKES = 3

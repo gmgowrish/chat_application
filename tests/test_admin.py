@@ -149,3 +149,15 @@ def test_settings_tolerate_pasted_quotes_and_spaces(monkeypatch):
     assert reloaded.ADMIN_PASSWORD_HASH == "scrypt:1$2$3"
     monkeypatch.undo()
     importlib.reload(admin_module)
+
+
+def test_plain_admin_password_setting(monkeypatch):
+    import importlib
+    from werkzeug.security import check_password_hash
+    import admin as admin_module
+    monkeypatch.setenv("ADMIN_PASSWORD", " 70199@gMg ")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", "broken")
+    reloaded = importlib.reload(admin_module)
+    assert check_password_hash(reloaded.ADMIN_PASSWORD_HASH, "70199@gMg")
+    monkeypatch.undo()
+    importlib.reload(admin_module)
