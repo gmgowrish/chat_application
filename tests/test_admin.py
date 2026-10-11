@@ -137,3 +137,15 @@ def test_admin_can_remove_a_person_from_the_chat(client):
 
 def test_recently_active_window_is_two_hours():
     assert server.ROSTER_TTL == 2 * 3600
+
+
+def test_settings_tolerate_pasted_quotes_and_spaces(monkeypatch):
+    import importlib
+    import admin as admin_module
+    monkeypatch.setenv("ADMIN_PATH", "  '/abc-secret-path-1234567890'\n")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", ' "scrypt:1$2$3" ')
+    reloaded = importlib.reload(admin_module)
+    assert reloaded.ADMIN_PATH == "abc-secret-path-1234567890"
+    assert reloaded.ADMIN_PASSWORD_HASH == "scrypt:1$2$3"
+    monkeypatch.undo()
+    importlib.reload(admin_module)

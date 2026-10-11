@@ -48,7 +48,7 @@ os.makedirs(FILES_DIR, mode=0o700, exist_ok=True)
 
 app = Flask(__name__)
 # Set SECRET_KEY in production, otherwise the admin login is lost on every restart.
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "").strip().strip("'\"") or secrets.token_hex(32)
 app.config.update(
     SESSION_COOKIE_NAME="s",
     SESSION_COOKIE_HTTPONLY=True,

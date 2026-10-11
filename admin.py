@@ -21,8 +21,13 @@ from werkzeug.security import check_password_hash
 
 import analytics
 
-ADMIN_PATH = os.environ.get("ADMIN_PATH", "").strip("/")
-ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
+def _setting(name):
+    """Env value with stray whitespace/quotes removed (easy to paste in by accident)."""
+    return os.environ.get(name, "").strip().strip("'\"").strip()
+
+
+ADMIN_PATH = _setting("ADMIN_PATH").strip("/")
+ADMIN_PASSWORD_HASH = _setting("ADMIN_PASSWORD_HASH")
 ADMIN_ALLOWED_IPS = {ip.strip() for ip in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",") if ip.strip()}
 FUNNY_URL = os.environ.get("FUNNY_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 MAX_STRIKES = 3
