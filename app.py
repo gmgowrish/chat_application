@@ -12,6 +12,7 @@ import functools
 import hashlib
 import logging
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -135,6 +136,42 @@ def safely(fn, *args):
         return None
 
 
+# Analytics writes run on one background thread, in order, so a slow or sleeping
+# database (e.g. a free Neon instance waking up) never delays a page or a message.
+_analytics_queue = queue.Queue(maxsize=10_000)
+
+
+def _analytics_worker():
+    while True:
+        fn, args = _analytics_queue.get()
+        safely(fn, *args)
+        _analytics_queue.task_done()
+
+
+threading.Thread(target=_analytics_worker, name="analytics", daemon=True).start()
+
+
+def later(fn, *args):
+    try:
+        _analytics_queue.put_nowait((fn, args))
+    except queue.Full:
+        log.warning("analytics queue full; dropping one record")
+
+
+def flush_analytics():
+    """Wait until queued analytics writes are done (used by tests)."""
+    _analytics_queue.join()
+
+
+def _start_session(holder, *args):
+    holder["row_id"] = analytics.start_chat_session(*args)
+
+
+def _end_session(holder, *args):
+    if holder.get("row_id") is not None:
+        analytics.end_chat_session(holder["row_id"], *args)
+
+
 def online_users():
     with users_lock:
         return sorted(
@@ -151,8 +188,8 @@ init_admin(app, client_ip, online_users, lambda: roster_for_admin(), lambda iden
 
 @app.route("/")
 def index():
-    safely(analytics.purge_old_rows)
-    safely(
+    later(analytics.purge_old_rows)
+    later(
         analytics.record_visit, client_ip(), request.headers.get("X-Forwarded-For"),
         request.headers.get("User-Agent"), request.referrer, request.headers.get("Accept-Language"), "/",
     )
@@ -387,13 +424,13 @@ def handle_connect(auth):
             "messages": 0,
             "recipients": 0,
             "renames": 0,
-            "row_id": None,
+            "session_row": {},  # filled in by the analytics worker
         }
         users[request.sid] = conn
         me = public_view(ident)
         roster = [public_view(i) for i in identities.values() if i["id"] != ident["id"]]
 
-    conn["row_id"] = safely(analytics.start_chat_session, ident["id"], ident["username"], conn["ip"], user_agent)
+    later(_start_session, conn["session_row"], ident["id"], ident["username"], conn["ip"], user_agent)
     emit("welcome", {"me": me, "members": roster, "max_file_bytes": MAX_FILE_BYTES - 16,
                      "file_ttl": FILE_TTL_SECONDS})
     for entry in pending:
@@ -417,9 +454,8 @@ def handle_disconnect(*_):
     if schedule:
         # Don't announce anything yet: a refresh reconnects within the grace period.
         socketio.start_background_task(mark_offline_later, ident["id"], generation)
-    if conn["row_id"] is not None:
-        safely(analytics.end_chat_session, conn["row_id"], ident["username"],
-               conn["messages"], conn["recipients"], conn["renames"])
+    # Queued after the matching start, so the row id is known by the time this runs.
+    later(_end_session, conn["session_row"], ident["username"], conn["messages"], conn["recipients"], conn["renames"])
 
 
 @socketio.on("send_message")

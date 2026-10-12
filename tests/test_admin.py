@@ -6,7 +6,7 @@ from sqlalchemy import delete
 import analytics
 from admin import FUNNY_URL
 import app as server
-from app import app, socketio
+from app import app, flush_analytics, socketio
 
 ADMIN = "/test-secret-panel-path-0123456789"
 PASSWORD = "correct horse battery staple"
@@ -83,6 +83,7 @@ def test_login_shows_dashboard_with_visits_and_chat_sessions(client):
 
     response = login(client)
     assert response.status_code == 303
+    flush_analytics()
     page = client.get(ADMIN)
     assert page.status_code == 200
     assert page.headers["Cache-Control"] == "no-store"
@@ -186,6 +187,7 @@ def test_bots_are_hidden_by_default(client):
     human = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/141.0 Safari/537.36"}
     client.get("/", headers=bot)
     client.get("/", headers=human)
+    flush_analytics()
     hidden = analytics.dashboard_data()
     assert hidden["stats"]["visits_24h"] == 1
     assert [v["device"] for v in hidden["recent_visits"]] == ["Desktop"]
@@ -217,6 +219,7 @@ def test_ip_locations_are_city_level_cached_and_shown(client, monkeypatch):
 
     client.get("/", headers={"User-Agent": "Mozilla/5.0 Chrome/141.0", "X-Forwarded-For": "x"},
                environ_base={"REMOTE_ADDR": "49.204.1.1"})
+    flush_analytics()
     login(client)
     page = client.get(ADMIN).get_data(as_text=True)
     assert "📍 Chennai, Tamil Nadu, IN" in page and "openstreetmap.org/?mlat=13.0878" in page
