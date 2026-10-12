@@ -5,19 +5,33 @@ end-to-end encrypted and never reaches the server, so it cannot be logged.
 
 Storage: PostgreSQL when DATABASE_URL is set (recommended on Render, whose disk
 is wiped on every restart), otherwise SQLite in DATA_DIR.
+
+Privacy at rest: identifying fields are never stored readably. IP addresses are
+stored as a keyed fingerprint (HMAC-SHA-256, for counting and lockouts) plus an
+AES-256-GCM encrypted copy (for the dashboard); browser strings, forwarding chains,
+referrers and chat names are AES-256-GCM encrypted. The keys are derived from
+SECRET_KEY, which lives only in the app's environment, so a copy of the database
+alone reveals none of it. Plain columns are limited to non-identifying data
+(times, browser/OS/device type, language, city, counts).
 """
+import base64
+import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from sqlalchemy import (
-    Column, DateTime, Integer, MetaData, String, Table, create_engine, delete, func, insert,
-    select, update,
+    Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, delete, func, insert,
+    inspect, select, text, update,
 )
 
 RETENTION_DAYS = int(os.environ.get("ANALYTICS_RETENTION_DAYS", "30"))
@@ -37,6 +51,8 @@ visits = Table(
     Column("referrer", String(300)),
     Column("language", String(80)),
     Column("path", String(200)),
+    Column("ip_enc", Text),
+    Column("details_enc", Text),
 )
 
 chat_sessions = Table(
@@ -54,6 +70,9 @@ chat_sessions = Table(
     Column("messages_sent", Integer, default=0),
     Column("recipients_total", Integer, default=0),
     Column("username_changes", Integer, default=0),
+    Column("ip_enc", Text),
+    Column("details_enc", Text),
+    Column("name_enc", Text),
 )
 
 security_events = Table(
@@ -64,6 +83,8 @@ security_events = Table(
     Column("kind", String(40)),
     Column("path", String(200)),
     Column("user_agent", String(400)),
+    Column("ip_enc", Text),
+    Column("details_enc", Text),
 )
 
 ip_locations = Table(
@@ -91,13 +112,119 @@ def _database_url():
     return f"sqlite:///{os.path.join(data_dir, 'analytics.db')}"
 
 
+# ---------------------------------------------------------------- field encryption
+
+def _secret():
+    value = os.environ.get("SECRET_KEY", "").strip().strip("'\"")
+    return (value.encode(), True) if value else (secrets.token_bytes(32), False)
+
+
+_SECRET, KEY_IS_STABLE = _secret()
+
+
+def _derive(label):
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"python-chat analytics", info=label).derive(_SECRET)
+
+
+_aead = AESGCM(_derive(b"field encryption v1"))
+_mac_key = _derive(b"ip fingerprint v1")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def ip_hash(ip):
+    """Keyed fingerprint of an IP: equal IPs give equal values, but it can't be reversed
+    or brute-forced without the key (a plain hash of the 4 billion IPv4s could)."""
+    return hmac.new(_mac_key, ip.encode(), "sha256").hexdigest() if ip else ""
+
+
+def seal(value):
+    if value in (None, ""):
+        return None
+    nonce = os.urandom(12)
+    return "v1:" + base64.b64encode(nonce + _aead.encrypt(nonce, str(value).encode(), None)).decode()
+
+
+def unseal(token):
+    if not token:
+        return None
+    try:
+        raw = base64.b64decode(token[3:])
+        return _aead.decrypt(raw[:12], raw[12:], None).decode()
+    except Exception:
+        return None  # different key (SECRET_KEY changed) or damaged value
+
+
+def seal_json(data):
+    data = {k: v for k, v in data.items() if v}
+    return seal(json.dumps(data)) if data else None
+
+
+def unseal_json(token):
+    value = unseal(token)
+    return json.loads(value) if value else {}
+
+
 engine = create_engine(_database_url(), pool_pre_ping=True)
 metadata.create_all(engine)
+
+
+def _migrate():
+    """Add the encrypted columns to older tables and encrypt rows written before this
+    version (plain IPs, browser strings, names). Safe to run on every start."""
+    wanted = {"visits": ["ip_enc", "details_enc"], "chat_sessions": ["ip_enc", "details_enc", "name_enc"],
+              "security_events": ["ip_enc", "details_enc"]}
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table_name, columns in wanted.items():
+            present = {c["name"] for c in inspector.get_columns(table_name)}
+            for column in columns:
+                if column not in present:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column} TEXT"))
+    converted = 0
+    with engine.begin() as conn:
+        legacy = lambda table: conn.execute(  # noqa: E731
+            select(table).where(table.c.ip_enc.is_(None), table.c.ip.is_not(None), table.c.ip != "")).fetchall()
+        for r in legacy(visits):
+            if _HEX64.fullmatch(r.ip):
+                continue
+            conn.execute(update(visits).where(visits.c.id == r.id).values(
+                ip=ip_hash(r.ip), ip_enc=seal(r.ip),
+                details_enc=seal_json({"forwarded_for": r.forwarded_for, "user_agent": r.user_agent,
+                                       "referrer": r.referrer}),
+                forwarded_for=None, user_agent=None, referrer=None))
+            converted += 1
+        for r in legacy(chat_sessions):
+            if _HEX64.fullmatch(r.ip):
+                continue
+            conn.execute(update(chat_sessions).where(chat_sessions.c.id == r.id).values(
+                ip=ip_hash(r.ip), ip_enc=seal(r.ip), details_enc=seal_json({"user_agent": r.user_agent}),
+                name_enc=seal(r.username), username=None, user_agent=None))
+            converted += 1
+        for r in legacy(security_events):
+            if _HEX64.fullmatch(r.ip):
+                continue
+            conn.execute(update(security_events).where(security_events.c.id == r.id).values(
+                ip=ip_hash(r.ip), ip_enc=seal(r.ip), details_enc=seal_json({"user_agent": r.user_agent}),
+                user_agent=None))
+            converted += 1
+        for r in conn.execute(select(ip_locations)).fetchall():
+            if not _HEX64.fullmatch(r.ip):
+                fingerprint = ip_hash(r.ip)
+                conn.execute(delete(ip_locations).where(ip_locations.c.ip == fingerprint))
+                conn.execute(update(ip_locations).where(ip_locations.c.ip == r.ip).values(ip=fingerprint))
+                converted += 1
+    return converted
+
+
+_converted = _migrate()
 # After a fork (gunicorn --preload), never reuse the parent's database connections.
 os.register_at_fork(after_in_child=lambda: engine.dispose(close=False))
 # One line in the logs so the owner can see where analytics are stored (never the password).
 print(f"[analytics] storage: {'PostgreSQL @ ' + str(engine.url.host) if engine.dialect.name == 'postgresql' else 'SQLite file (resets on Render restarts)'}",
       flush=True)
+print("[analytics] privacy: IPs fingerprinted + encrypted, details encrypted (AES-256-GCM), key from "
+      + ("SECRET_KEY" if KEY_IS_STABLE else "a temporary key: SET SECRET_KEY or stored details become unreadable after a restart")
+      + (f" | encrypted {_converted} older rows" if _converted else ""), flush=True)
 
 
 def now():
@@ -142,9 +269,10 @@ def record_visit(ip, forwarded_for, user_agent, referrer, language, path):
     browser, system, device = parse_user_agent(user_agent)
     with engine.begin() as conn:
         conn.execute(insert(visits).values(
-            ts=now(), ip=clip(ip, 64), forwarded_for=clip(forwarded_for, 300), browser=browser,
-            os=system, device=device, user_agent=clip(user_agent, 400), referrer=clip(referrer, 300),
-            language=clip(language, 80), path=clip(path, 200),
+            ts=now(), ip=ip_hash(clip(ip, 64)), ip_enc=seal(clip(ip, 64)), browser=browser, os=system,
+            device=device, language=clip(language, 80), path=clip(path, 200),
+            details_enc=seal_json({"forwarded_for": clip(forwarded_for, 300), "user_agent": clip(user_agent, 400),
+                                   "referrer": clip(referrer, 300)}),
         ))
 
 
@@ -152,8 +280,9 @@ def start_chat_session(public_id, username, ip, user_agent):
     browser, system, device = parse_user_agent(user_agent)
     with engine.begin() as conn:
         result = conn.execute(insert(chat_sessions).values(
-            public_id=public_id, username=username, ip=clip(ip, 64), browser=browser, os=system,
-            device=device, user_agent=clip(user_agent, 400), connected_at=now(),
+            public_id=public_id, name_enc=seal(username), ip=ip_hash(clip(ip, 64)), ip_enc=seal(clip(ip, 64)),
+            browser=browser, os=system, device=device, connected_at=now(),
+            details_enc=seal_json({"user_agent": clip(user_agent, 400)}),
             messages_sent=0, recipients_total=0, username_changes=0,
         ))
         return result.inserted_primary_key[0]
@@ -162,7 +291,7 @@ def start_chat_session(public_id, username, ip, user_agent):
 def end_chat_session(row_id, username, messages_sent, recipients_total, username_changes):
     with engine.begin() as conn:
         conn.execute(update(chat_sessions).where(chat_sessions.c.id == row_id).values(
-            disconnected_at=now(), username=username, messages_sent=messages_sent,
+            disconnected_at=now(), name_enc=seal(username), messages_sent=messages_sent,
             recipients_total=recipients_total, username_changes=username_changes,
         ))
 
@@ -170,7 +299,8 @@ def end_chat_session(row_id, username, messages_sent, recipients_total, username
 def record_security_event(kind, ip, path, user_agent):
     with engine.begin() as conn:
         conn.execute(insert(security_events).values(
-            ts=now(), ip=clip(ip, 64), kind=kind, path=clip(path, 200), user_agent=clip(user_agent, 400),
+            ts=now(), ip=ip_hash(clip(ip, 64)), ip_enc=seal(clip(ip, 64)), kind=kind, path=clip(path, 200),
+            details_enc=seal_json({"user_agent": clip(user_agent, 400)}),
         ))
 
 
@@ -178,7 +308,7 @@ def failed_admin_logins_since(ip, since):
     with engine.connect() as conn:
         return conn.execute(
             select(func.count()).select_from(security_events).where(
-                security_events.c.ip == ip,
+                security_events.c.ip == ip_hash(ip),
                 security_events.c.kind.in_(["admin_login_failed", "decoy_hit", "hidden_form_probe"]),
                 security_events.c.ts >= since,
             )
@@ -228,6 +358,14 @@ _lookups_in_flight = set()
 _lookup_lock = threading.Lock()
 
 
+def _is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def _is_private(ip):
     try:
         addr = ipaddress.ip_address(ip)
@@ -259,20 +397,21 @@ def _lookup_batch(ips):
             label, loc = None, None
         if label is not None:
             with engine.begin() as conn:
-                conn.execute(delete(ip_locations).where(ip_locations.c.ip == ip))
-                conn.execute(insert(ip_locations).values(ip=ip, label=label, loc=loc, fetched_at=now()))
+                conn.execute(delete(ip_locations).where(ip_locations.c.ip == ip_hash(ip)))
+                conn.execute(insert(ip_locations).values(ip=ip_hash(ip), label=label, loc=loc, fetched_at=now()))
         with _lookup_lock:
             _lookups_in_flight.discard(ip)
 
 
 def locations(ips, max_new=15):
     """Cached {ip: {"label", "loc"}}; unknown IPs are looked up in the background."""
-    ips = {ip for ip in ips if ip}
+    ips = {ip for ip in ips if ip and _is_ip(ip)}
     if not ips:
         return {}
+    by_hash = {ip_hash(ip): ip for ip in ips}  # the cache is keyed by fingerprint, never the IP
     with engine.connect() as conn:
-        rows = conn.execute(select(ip_locations).where(ip_locations.c.ip.in_(ips))).fetchall()
-    found = {r.ip: {"label": r.label, "loc": r.loc} for r in rows}
+        rows = conn.execute(select(ip_locations).where(ip_locations.c.ip.in_(list(by_hash)))).fetchall()
+    found = {by_hash[r.ip]: {"label": r.label, "loc": r.loc} for r in rows}
     with _lookup_lock:
         missing = [ip for ip in ips if ip not in found and ip not in _lookups_in_flight][:max_new]
         _lookups_in_flight.update(missing)
@@ -286,6 +425,17 @@ def locations(ips, max_new=15):
 def _rows(query):
     with engine.connect() as conn:
         return [dict(row._mapping) for row in conn.execute(query)]
+
+
+def _reveal(row):
+    """Decrypt a stored row for the dashboard (only the app holds the key)."""
+    if "ip_enc" in row:
+        ip = unseal(row["ip_enc"])
+        row["ip"] = ip if ip is not None else ("(unreadable: key changed)" if row["ip_enc"] else row["ip"])
+    row.update(unseal_json(row.get("details_enc")))
+    if row.get("name_enc"):
+        row["username"] = unseal(row["name_enc"]) or "(unreadable)"
+    return row
 
 
 def _count(table, column, since, distinct=None, extra=None):
@@ -337,7 +487,7 @@ def dashboard_data(include_bots=False):
         "top_browsers": _top(visits, visits.c.browser, ("ts", week), human_visit),
         "top_os": _top(visits, visits.c.os, ("ts", week), human_visit),
         "top_devices": _top(visits, visits.c.device, ("ts", week), human_visit),
-        "recent_sessions": _rows(sessions_query),
-        "recent_visits": _rows(visits_query),
-        "security": _rows(select(security_events).order_by(security_events.c.ts.desc()).limit(100)),
+        "recent_sessions": [_reveal(r) for r in _rows(sessions_query)],
+        "recent_visits": [_reveal(r) for r in _rows(visits_query)],
+        "security": [_reveal(r) for r in _rows(select(security_events).order_by(security_events.c.ts.desc()).limit(100))],
     }

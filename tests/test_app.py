@@ -148,7 +148,7 @@ def test_messages_wait_in_mailbox_while_screen_is_off():
 def test_messages_stay_queued_until_the_device_acknowledges_them():
     """A phone whose screen went off may still look connected; nothing may be lost."""
     alice = connect(1, name="Alice")
-    alice_id = welcome(alice)["me"]["id"]
+    welcome(alice)
     bob = connect(2, name="Bob")
     bob_id = welcome(bob)["me"]["id"]
     alice.get_received()

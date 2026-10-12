@@ -228,3 +228,69 @@ def test_ip_locations_are_city_level_cached_and_shown(client, monkeypatch):
 def test_private_addresses_are_not_sent_anywhere():
     assert analytics._lookup("127.0.0.1") == ("Local network", "")
     assert analytics._lookup("10.30.173.133") == ("Local network", "")
+
+
+def _raw_dump():
+    """Every stored value, as someone reading the database directly would see it."""
+    with analytics.engine.connect() as conn:
+        return " ".join(str(v) for table in (analytics.visits, analytics.chat_sessions, analytics.security_events,
+                                              analytics.ip_locations)
+                        for row in conn.execute(table.select()) for v in row)
+
+
+def test_identifying_data_is_unreadable_in_the_database_but_shown_on_the_dashboard(client):
+    ua = "Mozilla/5.0 (X11; Linux x86_64) Chrome/141.0 PrivacyProbe"
+    client.get("/", headers={"User-Agent": ua, "Referer": "https://secret-referrer.example/"},
+               environ_base={"REMOTE_ADDR": "203.0.113.77"})
+    chatter = socketio.test_client(app, auth={
+        "public_key": base64.b64encode(b"\x04" + b"\x07" * 64).decode(), "token": "p" * 43,
+        "username": "SecretName", "gender": "female"}, headers={"User-Agent": ua})
+    assert chatter.is_connected()
+    chatter.disconnect()
+    client.post("/admin", environ_base={"REMOTE_ADDR": "203.0.113.77"}, headers={"User-Agent": ua})
+    flush_analytics()
+
+    raw = _raw_dump()
+    for secret in ("203.0.113.77", "PrivacyProbe", "SecretName", "secret-referrer"):
+        assert secret not in raw, f"{secret} stored readably"
+
+    data = analytics.dashboard_data()
+    assert data["recent_visits"][0]["ip"] == "203.0.113.77"
+    assert data["recent_visits"][0]["user_agent"] == ua
+    assert data["recent_sessions"][0]["username"] == "SecretName"
+    assert data["security"][0]["ip"] == "203.0.113.77"
+    assert data["stats"]["unique_ips_24h"] == 1
+
+
+def test_lockout_still_works_with_fingerprinted_ips(client):
+    for _ in range(3):
+        client.post(ADMIN, data={"q": "nope"}, environ_base={"REMOTE_ADDR": "198.51.100.9"})
+    assert funny(login(client, ip="198.51.100.9"))
+    assert login(client).status_code == 303
+
+
+def test_older_plain_rows_are_encrypted_on_start():
+    from sqlalchemy import insert
+    with analytics.engine.begin() as conn:
+        conn.execute(insert(analytics.visits).values(ts=analytics.now(), ip="192.0.2.5", user_agent="LegacyUA/1.0",
+                                                     forwarded_for="192.0.2.5, 10.0.0.1", device="Desktop"))
+        conn.execute(insert(analytics.chat_sessions).values(public_id="x", username="LegacyName", ip="192.0.2.5",
+                                                            connected_at=analytics.now(), device="Desktop"))
+        conn.execute(insert(analytics.ip_locations).values(ip="192.0.2.5", label="Testville", loc="",
+                                                           fetched_at=analytics.now()))
+    assert analytics._migrate() == 3
+    raw = _raw_dump()
+    assert "192.0.2.5" not in raw and "LegacyUA" not in raw and "LegacyName" not in raw
+    data = analytics.dashboard_data()
+    assert data["recent_visits"][0]["ip"] == "192.0.2.5" and data["recent_visits"][0]["user_agent"] == "LegacyUA/1.0"
+    assert data["recent_sessions"][0]["username"] == "LegacyName"
+    assert analytics.locations(["192.0.2.5"]) == {"192.0.2.5": {"label": "Testville", "loc": ""}}
+    assert analytics._migrate() == 0  # idempotent
+
+
+def test_ip_fingerprint_is_keyed_not_a_plain_hash():
+    import hashlib
+    fingerprint = analytics.ip_hash("8.8.8.8")
+    assert len(fingerprint) == 64 and fingerprint != hashlib.sha256(b"8.8.8.8").hexdigest()
+    assert analytics.unseal(analytics.seal("hello")) == "hello"
+    assert analytics.unseal("v1:" + base64.b64encode(b"x" * 40).decode()) is None  # tampered/foreign → None
