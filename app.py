@@ -138,20 +138,45 @@ def safely(fn, *args):
 
 # Analytics writes run on one background thread, in order, so a slow or sleeping
 # database (e.g. a free Neon instance waking up) never delays a page or a message.
+#
+# The thread is started lazily in the process that serves requests: with
+# `gunicorn --preload` (Render adds it) the app is imported in the master and then
+# forked, and threads don't survive a fork, so a thread started at import time would
+# never run in the worker.
 _analytics_queue = queue.Queue(maxsize=10_000)
+_worker_pid = None
+_worker_lock = threading.Lock()
 
 
-def _analytics_worker():
+def _analytics_worker(q):
     while True:
-        fn, args = _analytics_queue.get()
+        fn, args = q.get()
         safely(fn, *args)
-        _analytics_queue.task_done()
+        q.task_done()
 
 
-threading.Thread(target=_analytics_worker, name="analytics", daemon=True).start()
+def _ensure_worker():
+    global _worker_pid
+    if _worker_pid == os.getpid():
+        return
+    with _worker_lock:
+        if _worker_pid != os.getpid():
+            threading.Thread(target=_analytics_worker, args=(_analytics_queue,), name="analytics", daemon=True).start()
+            _worker_pid = os.getpid()
+
+
+def _after_fork_in_child():
+    global _analytics_queue, _worker_pid, _worker_lock
+    _analytics_queue = queue.Queue(maxsize=10_000)
+    _worker_pid = None
+    _worker_lock = threading.Lock()
+
+
+os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def later(fn, *args):
+    _ensure_worker()
     try:
         _analytics_queue.put_nowait((fn, args))
     except queue.Full:
@@ -160,6 +185,7 @@ def later(fn, *args):
 
 def flush_analytics():
     """Wait until queued analytics writes are done (used by tests)."""
+    _ensure_worker()
     _analytics_queue.join()
 
 

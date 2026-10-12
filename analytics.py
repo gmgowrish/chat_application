@@ -93,6 +93,8 @@ def _database_url():
 
 engine = create_engine(_database_url(), pool_pre_ping=True)
 metadata.create_all(engine)
+# After a fork (gunicorn --preload), never reuse the parent's database connections.
+os.register_at_fork(after_in_child=lambda: engine.dispose(close=False))
 # One line in the logs so the owner can see where analytics are stored (never the password).
 print(f"[analytics] storage: {'PostgreSQL @ ' + str(engine.url.host) if engine.dialect.name == 'postgresql' else 'SQLite file (resets on Render restarts)'}",
       flush=True)
